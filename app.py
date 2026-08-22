@@ -24,15 +24,14 @@ from file_handler import (
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
 
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "DATABASE_URL",
+    f"sqlite:///{db.DB_PATH}"
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# Fix #2: close the shared per-request DB connection at the end of each request
-@app.teardown_appcontext
-def close_db(error):
-    db_conn = g.pop("db", None)
-    if db_conn is not None:
-        db_conn.close()
-
-db.init_db()
+db.db.init_app(app)
+db.init_db(app)
 
 
 def get_client(endpoint: dict = None) -> OpenAI:

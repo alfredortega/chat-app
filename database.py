@@ -1,31 +1,191 @@
-import sqlite3
-import os
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from datetime import datetime, timezone
+import os
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "chat.db")
 
+db = SQLAlchemy()
 
-def get_connection():
-    """
-    Return a per-request SQLite connection stored on Flask's ``g`` object so
-    that all DB calls within the same request share one connection instead of
-    opening a fresh one each time.  Falls back to a plain connection when
-    called outside a Flask request context (e.g. init_db at startup).
-    Fix #2: request-scoped connection via Flask g.
-    """
-    try:
-        from flask import g
-        if "db" not in g:
-            g.db = sqlite3.connect(DB_PATH)
-            g.db.row_factory = sqlite3.Row
-            g.db.execute("PRAGMA foreign_keys = ON")
-        return g.db
-    except RuntimeError:
-        # Outside application context (startup, tests, CLI)
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    # Only emit PRAGMAs for sqlite connections
+    if type(dbapi_connection).__name__ == "Connection" or "sqlite" in str(type(dbapi_connection)):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+        except Exception:
+            pass
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
+
+class Folder(db.Model):
+    __tablename__ = 'folders'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False)
+    position = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.String(50), nullable=False)
+    updated_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "position": self.position,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+
+class Persona(db.Model):
+    __tablename__ = 'personas'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(191), nullable=False, unique=True)
+    prompt = db.Column(db.Text(length=16777215), nullable=False)
+    created_at = db.Column(db.String(50), nullable=False)
+    updated_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "prompt": self.prompt,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+
+class Endpoint(db.Model):
+    __tablename__ = 'endpoints'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False)
+    base_url = db.Column(db.String(512), nullable=False)
+    api_key = db.Column(db.String(512), nullable=False, default='')
+    default_model = db.Column(db.String(255), nullable=False, default='')
+    is_default = db.Column(db.Integer, nullable=False, default=0, index=True)
+    model_filter = db.Column(db.String(512), nullable=False, default='')
+    created_at = db.Column(db.String(50), nullable=False)
+    updated_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "default_model": self.default_model,
+            "is_default": self.is_default,
+            "model_filter": self.model_filter,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+
+class Conversation(db.Model):
+    __tablename__ = 'conversations'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(255), nullable=False, default='New Conversation')
+    model_id = db.Column(db.String(255), nullable=False, default='')
+    persona_id = db.Column(db.Integer, db.ForeignKey('personas.id', ondelete='SET NULL'), nullable=True)
+    endpoint_id = db.Column(db.Integer, db.ForeignKey('endpoints.id', ondelete='SET NULL'), nullable=True)
+    output_dir = db.Column(db.String(512), nullable=False, default='')
+    enable_tools = db.Column(db.Integer, nullable=False, default=1)
+    folder_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='SET NULL'), nullable=True, index=True)
+    created_at = db.Column(db.String(50), nullable=False)
+    updated_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "model_id": self.model_id,
+            "persona_id": self.persona_id,
+            "endpoint_id": self.endpoint_id,
+            "output_dir": self.output_dir,
+            "enable_tools": self.enable_tools,
+            "folder_id": self.folder_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+
+class Message(db.Model):
+    __tablename__ = 'messages'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False, index=True)
+    role = db.Column(db.String(50), nullable=False)
+    content = db.Column(db.Text(length=16777215), nullable=False)
+    tool_call_id = db.Column(db.String(255), nullable=True)
+    tool_calls_json = db.Column(db.Text(length=16777215), nullable=True)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "role": self.role,
+            "content": self.content,
+            "tool_call_id": self.tool_call_id,
+            "tool_calls_json": self.tool_calls_json,
+            "created_at": self.created_at
+        }
+
+
+class Setting(db.Model):
+    __tablename__ = 'settings'
+    key = db.Column(db.String(191), primary_key=True)
+    value = db.Column(db.Text(length=16777215), nullable=False)
+
+    def to_dict(self):
+        return {
+            "key": self.key,
+            "value": self.value
+        }
+
+
+class ConvFile(db.Model):
+    __tablename__ = 'conv_files'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False, index=True)
+    original_name = db.Column(db.String(512), nullable=False)
+    disk_path = db.Column(db.String(512), nullable=False)
+    size_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    char_count = db.Column(db.Integer, nullable=False, default=0)
+    snippet = db.Column(db.Text(length=16777215), nullable=True)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "original_name": self.original_name,
+            "disk_path": self.disk_path,
+            "size_bytes": self.size_bytes,
+            "char_count": self.char_count,
+            "snippet": self.snippet,
+            "created_at": self.created_at
+        }
+
+
+class LinkedFolder(db.Model):
+    __tablename__ = 'linked_folders'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False, index=True)
+    folder_path = db.Column(db.String(512), nullable=False)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "folder_path": self.folder_path,
+            "created_at": self.created_at
+        }
 
 
 # ── Starter personas ───────────────────────────────────────────────────────────
@@ -110,167 +270,39 @@ STARTER_PERSONAS = [
 ]
 
 
-def init_db():
-    with get_connection() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS folders (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT    NOT NULL,
-                position   INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT    NOT NULL,
-                updated_at TEXT    NOT NULL
-            );
+def init_db(app=None):
+    if app:
+        with app.app_context():
+            db.create_all()
+            _seed_personas_and_settings()
+    else:
+        db.create_all()
+        _seed_personas_and_settings()
 
-            CREATE TABLE IF NOT EXISTS conversations (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                title        TEXT    NOT NULL DEFAULT 'New Conversation',
-                model_id     TEXT    NOT NULL DEFAULT '',
-                persona_id   INTEGER REFERENCES personas(id) ON DELETE SET NULL,
-                endpoint_id  INTEGER REFERENCES endpoints(id) ON DELETE SET NULL,
-                output_dir   TEXT    NOT NULL DEFAULT '',
-                enable_tools INTEGER NOT NULL DEFAULT 1,
-                folder_id    INTEGER REFERENCES folders(id) ON DELETE SET NULL,
-                created_at   TEXT    NOT NULL,
-                updated_at   TEXT    NOT NULL
-            );
 
-            CREATE TABLE IF NOT EXISTS messages (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id     INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                role                TEXT    NOT NULL,
-                content             TEXT    NOT NULL,
-                tool_call_id        TEXT,
-                tool_calls_json     TEXT,
-                created_at          TEXT    NOT NULL
-            );
+def _seed_personas_and_settings():
+    # Settings default seeding
+    for key, val in [('output_dir', ''), ('browser_root', '')]:
+        existing = db.session.get(Setting, key)
+        if not existing:
+            setting = Setting(key=key, value=val)
+            db.session.add(setting)
 
-            CREATE TABLE IF NOT EXISTS settings (
-                key     TEXT PRIMARY KEY,
-                value   TEXT NOT NULL
-            );
+    # Personas seeding
+    for name, prompt in STARTER_PERSONAS:
+        existing = Persona.query.filter_by(name=name).first()
+        if not existing:
+            persona = Persona(name=name, prompt=prompt, created_at=_now(), updated_at=_now())
+            db.session.add(persona)
 
-            CREATE TABLE IF NOT EXISTS personas (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT    NOT NULL UNIQUE,
-                prompt     TEXT    NOT NULL,
-                created_at TEXT    NOT NULL,
-                updated_at TEXT    NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS conv_files (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                original_name   TEXT    NOT NULL,
-                disk_path       TEXT    NOT NULL,
-                size_bytes      INTEGER NOT NULL DEFAULT 0,
-                char_count      INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT    NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS linked_folders (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                folder_path     TEXT    NOT NULL,
-                created_at      TEXT    NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS endpoints (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                name          TEXT    NOT NULL,
-                base_url      TEXT    NOT NULL,
-                api_key       TEXT    NOT NULL DEFAULT '',
-                default_model TEXT    NOT NULL DEFAULT '',
-                is_default    INTEGER NOT NULL DEFAULT 0,
-                model_filter  TEXT    NOT NULL DEFAULT '',
-                created_at    TEXT    NOT NULL,
-                updated_at    TEXT    NOT NULL
-            );
-
-            INSERT OR IGNORE INTO settings (key, value) VALUES ('output_dir', '');
-            INSERT OR IGNORE INTO settings (key, value) VALUES ('browser_root', '');
-
-            -- Fix #14: indexes on foreign-key columns used in WHERE clauses
-            CREATE INDEX IF NOT EXISTS idx_messages_conv_id       ON messages(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_conv_files_conv_id     ON conv_files(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_linked_folders_conv_id ON linked_folders(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_conversations_folder_id ON conversations(folder_id);
-            CREATE INDEX IF NOT EXISTS idx_endpoints_is_default   ON endpoints(is_default);
-            """
-        )
-        conn.execute("PRAGMA journal_mode=WAL")
-
-        # Add persona_id column to conversations if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conversations ADD COLUMN persona_id INTEGER REFERENCES personas(id) ON DELETE SET NULL")
-        except Exception:
-            pass  # column already exists
-
-        # Add output_dir column to conversations if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conversations ADD COLUMN output_dir TEXT NOT NULL DEFAULT ''")
-        except Exception:
-            pass  # column already exists
-
-        # Add enable_tools column to conversations if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conversations ADD COLUMN enable_tools INTEGER NOT NULL DEFAULT 1")
-        except Exception:
-            pass  # column already exists
-
-        # Add endpoint_id column to conversations if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conversations ADD COLUMN endpoint_id INTEGER REFERENCES endpoints(id) ON DELETE SET NULL")
-        except Exception:
-            pass  # column already exists
-
-        # Add default_model column to endpoints if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE endpoints ADD COLUMN default_model TEXT NOT NULL DEFAULT ''")
-        except Exception:
-            pass  # column already exists
-
-        # Add model_filter column to endpoints if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE endpoints ADD COLUMN model_filter TEXT NOT NULL DEFAULT ''")
-        except Exception:
-            pass  # column already exists
-
-        # Add folder_id column to conversations if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conversations ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL")
-        except Exception:
-            pass  # column already exists
-
-        # Add snippet column to conv_files if upgrading an existing DB
-        try:
-            conn.execute("ALTER TABLE conv_files ADD COLUMN snippet TEXT")
-        except Exception:
-            pass  # column already exists
-
-        # Remove context_window and default_model if upgrading from old DB
-        try:
-            conn.execute("DELETE FROM settings WHERE key IN ('context_window', 'default_model')")
-        except Exception:
-            pass
-
-        # Seed starter personas (skip if they already exist)
-        for name, prompt in STARTER_PERSONAS:
-            conn.execute(
-                "INSERT OR IGNORE INTO personas (name, prompt, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (name, prompt, _now(), _now()),
-            )
+    db.session.commit()
 
 
 # ── Conversations ──────────────────────────────────────────────────────────────
 
 def list_conversations():
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, title, model_id, persona_id, endpoint_id, output_dir, enable_tools, folder_id, created_at, updated_at "
-            "FROM conversations ORDER BY updated_at DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = Conversation.query.order_by(Conversation.updated_at.desc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def create_conversation(title: str, model_id: str, persona_id: int = None, endpoint_id: int = None, folder_id: int = None) -> dict:
@@ -278,90 +310,79 @@ def create_conversation(title: str, model_id: str, persona_id: int = None, endpo
     if endpoint_id is None:
         default_ep = get_default_endpoint()
         endpoint_id = default_ep["id"] if default_ep else None
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO conversations (title, model_id, persona_id, endpoint_id, folder_id, output_dir, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '', ?, ?)",
-            (title, model_id, persona_id, endpoint_id, folder_id, now, now),
-        )
-        row = conn.execute(
-            "SELECT id, title, model_id, persona_id, endpoint_id, output_dir, enable_tools, folder_id, created_at, updated_at FROM conversations WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+
+    conv = Conversation(
+        title=title,
+        model_id=model_id,
+        persona_id=persona_id,
+        endpoint_id=endpoint_id,
+        folder_id=folder_id,
+        output_dir='',
+        created_at=now,
+        updated_at=now
+    )
+    db.session.add(conv)
+    db.session.commit()
+    return conv.to_dict()
 
 
 def get_conversation(conversation_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, title, model_id, persona_id, endpoint_id, output_dir, enable_tools, folder_id, created_at, updated_at FROM conversations WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    conv = db.session.get(Conversation, conversation_id)
+    return conv.to_dict() if conv else None
 
 
 def update_conversation(conversation_id: int, title: str = None, model_id: str = None, persona_id: int = None, clear_persona: bool = False, output_dir: str = None, enable_tools: bool = None, endpoint_id: int = None, clear_endpoint: bool = False, folder_id: int = None, clear_folder: bool = False):
-    fields, params = [], []
-    if title is not None:
-        fields.append("title = ?")
-        params.append(title)
-    if model_id is not None:
-        fields.append("model_id = ?")
-        params.append(model_id)
-    if persona_id is not None:
-        fields.append("persona_id = ?")
-        params.append(persona_id)
-    elif clear_persona:
-        fields.append("persona_id = NULL")
-    if endpoint_id is not None:
-        fields.append("endpoint_id = ?")
-        params.append(endpoint_id)
-    elif clear_endpoint:
-        fields.append("endpoint_id = NULL")
-    if folder_id is not None:
-        fields.append("folder_id = ?")
-        params.append(folder_id)
-    elif clear_folder:
-        fields.append("folder_id = NULL")
-    if output_dir is not None:
-        fields.append("output_dir = ?")
-        params.append(output_dir)
-    if enable_tools is not None:
-        fields.append("enable_tools = ?")
-        params.append(1 if enable_tools else 0)
-    if not fields:
+    conv = db.session.get(Conversation, conversation_id)
+    if not conv:
         return
-    fields.append("updated_at = ?")
-    params.append(_now())
-    params.append(conversation_id)
-    with get_connection() as conn:
-        conn.execute(
-            f"UPDATE conversations SET {', '.join(fields)} WHERE id = ?", params
-        )
+
+    if title is not None:
+        conv.title = title
+    if model_id is not None:
+        conv.model_id = model_id
+    if persona_id is not None:
+        conv.persona_id = persona_id
+    elif clear_persona:
+        conv.persona_id = None
+
+    if endpoint_id is not None:
+        conv.endpoint_id = endpoint_id
+    elif clear_endpoint:
+        conv.endpoint_id = None
+
+    if folder_id is not None:
+        conv.folder_id = folder_id
+    elif clear_folder:
+        conv.folder_id = None
+
+    if output_dir is not None:
+        conv.output_dir = output_dir
+    if enable_tools is not None:
+        conv.enable_tools = 1 if enable_tools else 0
+
+    conv.updated_at = _now()
+    db.session.commit()
 
 
 def delete_conversation(conversation_id: int):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    conv = db.session.get(Conversation, conversation_id)
+    if conv:
+        db.session.delete(conv)
+        db.session.commit()
 
 
 def touch_conversation(conversation_id: int):
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE conversations SET updated_at = ? WHERE id = ?",
-            (_now(), conversation_id),
-        )
+    conv = db.session.get(Conversation, conversation_id)
+    if conv:
+        conv.updated_at = _now()
+        db.session.commit()
 
 
 # ── Messages ───────────────────────────────────────────────────────────────────
 
 def get_messages(conversation_id: int) -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, created_at "
-            "FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            (conversation_id,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.id.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def add_message(
@@ -371,58 +392,50 @@ def add_message(
     tool_call_id: str = None,
     tool_calls_json: str = None,
 ) -> dict:
-    now = _now()
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, tool_call_id, tool_calls_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (conversation_id, role, content, tool_call_id, tool_calls_json, now),
-        )
-        row = conn.execute(
-            "SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, created_at "
-            "FROM messages WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    msg = Message(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        tool_call_id=tool_call_id,
+        tool_calls_json=tool_calls_json,
+        created_at=_now()
+    )
+    db.session.add(msg)
+    db.session.commit()
+    return msg.to_dict()
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
 def get_setting(key: str) -> str | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key = ?", (key,)
-        ).fetchone()
-    return row["value"] if row else None
+    setting = db.session.get(Setting, key)
+    return setting.value if setting else None
 
 
 def set_setting(key: str, value: str):
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
+    setting = db.session.get(Setting, key)
+    if setting:
+        setting.value = value
+    else:
+        setting = Setting(key=key, value=value)
+        db.session.add(setting)
+    db.session.commit()
 
 
 def reset_settings() -> dict:
-    """
-    Reset the core configuration settings to empty:
-    output_dir (default output folder) and browser_root
-    (folder browser starting path). Also clears each endpoint's
-    default_model so no default/fallback model remains configured.
-    Personas, endpoints (other than their default model) and conversations
-    are left intact.
-    """
-    with get_connection() as conn:
-        for key in ("output_dir", "browser_root"):
-            conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?, '') "
-                "ON CONFLICT(key) DO UPDATE SET value = ''",
-                (key,),
-            )
-        # Clear the per-endpoint default (fallback) model too.
-        conn.execute("UPDATE endpoints SET default_model = ''")
+    for key in ("output_dir", "browser_root"):
+        setting = db.session.get(Setting, key)
+        if setting:
+            setting.value = ""
+        else:
+            setting = Setting(key=key, value="")
+            db.session.add(setting)
+
+    endpoints = Endpoint.query.all()
+    for ep in endpoints:
+        ep.default_model = ""
+
+    db.session.commit()
     return {
         "output_dir": "",
         "browser_root": "",
@@ -432,290 +445,213 @@ def reset_settings() -> dict:
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 def list_endpoints() -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-            "FROM endpoints ORDER BY is_default DESC, name ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = Endpoint.query.order_by(Endpoint.is_default.desc(), Endpoint.name.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def get_endpoint(endpoint_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-            "FROM endpoints WHERE id = ?",
-            (endpoint_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    ep = db.session.get(Endpoint, endpoint_id)
+    return ep.to_dict() if ep else None
 
 
 def get_default_endpoint() -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-            "FROM endpoints WHERE is_default = 1 ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            # Fall back to any endpoint if none is explicitly marked default
-            row = conn.execute(
-                "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-                "FROM endpoints ORDER BY id ASC LIMIT 1"
-            ).fetchone()
-    return dict(row) if row else None
+    ep = Endpoint.query.filter_by(is_default=1).order_by(Endpoint.updated_at.desc()).first()
+    if ep is None:
+        ep = Endpoint.query.order_by(Endpoint.id.asc()).first()
+    return ep.to_dict() if ep else None
 
 
 def create_endpoint(name: str, base_url: str, api_key: str = "", default_model: str = "", is_default: bool = False, model_filter: str = "") -> dict:
     now = _now()
-    with get_connection() as conn:
-        if is_default:
-            conn.execute("UPDATE endpoints SET is_default = 0")
-        cur = conn.execute(
-            "INSERT INTO endpoints (name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, base_url, api_key, default_model, 1 if is_default else 0, model_filter, now, now),
-        )
-        # If this is the very first endpoint, make it default regardless.
-        total = conn.execute("SELECT COUNT(*) FROM endpoints").fetchone()[0]
-        if total == 1:
-            conn.execute("UPDATE endpoints SET is_default = 1 WHERE id = ?", (cur.lastrowid,))
-        row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-            "FROM endpoints WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    if is_default:
+        Endpoint.query.update({Endpoint.is_default: 0})
+
+    ep = Endpoint(
+        name=name,
+        base_url=base_url,
+        api_key=api_key,
+        default_model=default_model,
+        is_default=1 if is_default else 0,
+        model_filter=model_filter,
+        created_at=now,
+        updated_at=now
+    )
+    db.session.add(ep)
+    db.session.commit()
+
+    total = Endpoint.query.count()
+    if total == 1:
+        ep.is_default = 1
+        db.session.commit()
+
+    return ep.to_dict()
 
 
 def update_endpoint(endpoint_id: int, name: str = None, base_url: str = None,
                     api_key: str = None, default_model: str = None, is_default: bool = None, model_filter: str = None) -> dict | None:
-    fields, params = [], []
+    ep = db.session.get(Endpoint, endpoint_id)
+    if not ep:
+        return None
+
     if name is not None:
-        fields.append("name = ?")
-        params.append(name)
+        ep.name = name
     if base_url is not None:
-        fields.append("base_url = ?")
-        params.append(base_url)
+        ep.base_url = base_url
     if api_key is not None:
-        fields.append("api_key = ?")
-        params.append(api_key)
+        ep.api_key = api_key
     if default_model is not None:
-        fields.append("default_model = ?")
-        params.append(default_model)
+        ep.default_model = default_model
     if model_filter is not None:
-        fields.append("model_filter = ?")
-        params.append(model_filter)
-    with get_connection() as conn:
-        # Handle default flag exclusively (only one endpoint may be default).
-        if is_default is True:
-            conn.execute("UPDATE endpoints SET is_default = 0")
-            fields.append("is_default = ?")
-            params.append(1)
-        elif is_default is False:
-            fields.append("is_default = ?")
-            params.append(0)
-        if fields:
-            fields.append("updated_at = ?")
-            params.append(_now())
-            params.append(endpoint_id)
-            conn.execute(
-                f"UPDATE endpoints SET {', '.join(fields)} WHERE id = ?", params
-            )
-        row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
-            "FROM endpoints WHERE id = ?",
-            (endpoint_id,),
-        ).fetchone()
-    return dict(row) if row else None
+        ep.model_filter = model_filter
+
+    if is_default is True:
+        Endpoint.query.filter(Endpoint.id != endpoint_id).update({Endpoint.is_default: 0})
+        ep.is_default = 1
+    elif is_default is False:
+        ep.is_default = 0
+
+    ep.updated_at = _now()
+    db.session.commit()
+    return ep.to_dict()
 
 
 def delete_endpoint(endpoint_id: int):
-    with get_connection() as conn:
-        was_default = conn.execute(
-            "SELECT is_default FROM endpoints WHERE id = ?", (endpoint_id,)
-        ).fetchone()
-        conn.execute("DELETE FROM endpoints WHERE id = ?", (endpoint_id,))
-        # If we removed the default, promote another endpoint to default.
-        if was_default and was_default["is_default"]:
-            nxt = conn.execute(
-                "SELECT id FROM endpoints ORDER BY id ASC LIMIT 1"
-            ).fetchone()
-            if nxt:
-                conn.execute(
-                    "UPDATE endpoints SET is_default = 1 WHERE id = ?", (nxt["id"],)
-                )
+    ep = db.session.get(Endpoint, endpoint_id)
+    if not ep:
+        return
+
+    was_default = ep.is_default == 1
+    db.session.delete(ep)
+    db.session.commit()
+
+    if was_default:
+        nxt = Endpoint.query.order_by(Endpoint.id.asc()).first()
+        if nxt:
+            nxt.is_default = 1
+            db.session.commit()
 
 
 # ── Personas ───────────────────────────────────────────────────────────────────
 
 def list_personas() -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, name, prompt, created_at, updated_at FROM personas ORDER BY name ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = Persona.query.order_by(Persona.name.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def get_persona(persona_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, name, prompt, created_at, updated_at FROM personas WHERE id = ?",
-            (persona_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    p = db.session.get(Persona, persona_id)
+    return p.to_dict() if p else None
 
 
 def create_persona(name: str, prompt: str) -> dict:
     now = _now()
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO personas (name, prompt, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (name, prompt, now, now),
-        )
-        row = conn.execute(
-            "SELECT id, name, prompt, created_at, updated_at FROM personas WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    p = Persona(name=name, prompt=prompt, created_at=now, updated_at=now)
+    db.session.add(p)
+    db.session.commit()
+    return p.to_dict()
 
 
 def update_persona(persona_id: int, name: str = None, prompt: str = None):
-    fields, params = [], []
-    if name is not None:
-        fields.append("name = ?")
-        params.append(name)
-    if prompt is not None:
-        fields.append("prompt = ?")
-        params.append(prompt)
-    if not fields:
+    p = db.session.get(Persona, persona_id)
+    if not p:
         return
-    fields.append("updated_at = ?")
-    params.append(_now())
-    params.append(persona_id)
-    with get_connection() as conn:
-        conn.execute(
-            f"UPDATE personas SET {', '.join(fields)} WHERE id = ?", params
-        )
+    if name is not None:
+        p.name = name
+    if prompt is not None:
+        p.prompt = prompt
+    p.updated_at = _now()
+    db.session.commit()
 
 
 def delete_persona(persona_id: int):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
+    p = db.session.get(Persona, persona_id)
+    if p:
+        db.session.delete(p)
+        db.session.commit()
 
 
 # ── Conversation files ─────────────────────────────────────────────────────────
 
 def add_conv_file(conversation_id: int, original_name: str, disk_path: str,
                   size_bytes: int, char_count: int, snippet: str = "") -> dict:
-    now = _now()
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO conv_files (conversation_id, original_name, disk_path, size_bytes, char_count, snippet, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (conversation_id, original_name, disk_path, size_bytes, char_count, snippet, now),
-        )
-        row = conn.execute(
-            "SELECT id, conversation_id, original_name, disk_path, size_bytes, char_count, snippet, created_at "
-            "FROM conv_files WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    cf = ConvFile(
+        conversation_id=conversation_id,
+        original_name=original_name,
+        disk_path=disk_path,
+        size_bytes=size_bytes,
+        char_count=char_count,
+        snippet=snippet,
+        created_at=_now()
+    )
+    db.session.add(cf)
+    db.session.commit()
+    return cf.to_dict()
 
 
 def list_conv_files(conversation_id: int) -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, conversation_id, original_name, disk_path, size_bytes, char_count, created_at "
-            "FROM conv_files WHERE conversation_id = ? ORDER BY created_at ASC",
-            (conversation_id,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = ConvFile.query.filter_by(conversation_id=conversation_id).order_by(ConvFile.created_at.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def get_conv_file(file_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, conversation_id, original_name, disk_path, size_bytes, char_count, created_at "
-            "FROM conv_files WHERE id = ?",
-            (file_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    cf = db.session.get(ConvFile, file_id)
+    return cf.to_dict() if cf else None
 
 
 def delete_conv_file(file_id: int):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM conv_files WHERE id = ?", (file_id,))
+    cf = db.session.get(ConvFile, file_id)
+    if cf:
+        db.session.delete(cf)
+        db.session.commit()
 
 
 def delete_last_assistant_turn(conversation_id: int):
-    """
-    Remove the last assistant message and any tool messages that follow it,
-    so the model can regenerate a fresh response.
+    messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.id.asc()).all()
+    if not messages:
+        return
 
-    Fix #15: perform SELECT and DELETE in a single connection/transaction
-    to eliminate the TOCTOU gap between two separate connections.
-    """
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, role FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-            (conversation_id,),
-        ).fetchall()
+    cut_from_id = None
+    for msg in reversed(messages):
+        if msg.role == 'assistant':
+            cut_from_id = msg.id
+            break
 
-        if not rows:
-            return
+    if cut_from_id is None:
+        return
 
-        # Walk backwards to find the last assistant message
-        cut_from_id = None
-        for row in reversed(rows):
-            if row["role"] == "assistant":
-                cut_from_id = row["id"]
-                break
-
-        if cut_from_id is None:
-            return
-
-        conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ? AND id >= ?",
-            (conversation_id, cut_from_id),
-        )
+    Message.query.filter(Message.conversation_id == conversation_id, Message.id >= cut_from_id).delete()
+    db.session.commit()
 
 
 def edit_message_and_truncate(conversation_id: int, message_id: int, new_content: str):
-    """Update a message's content and delete all messages after it."""
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ?",
-            (new_content, message_id, conversation_id),
-        )
-        conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ? AND id > ?",
-            (conversation_id, message_id),
-        )
+    msg = db.session.get(Message, message_id)
+    if msg and msg.conversation_id == conversation_id:
+        msg.content = new_content
+        Message.query.filter(Message.conversation_id == conversation_id, Message.id > message_id).delete()
+        db.session.commit()
 
 
 def search_all_conversations(query: str) -> list[dict]:
-    """Search message content across all conversations. Returns unique conversations with a snippet."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT c.id, c.title, c.updated_at, m.content as snippet
-            FROM conversations c
-            JOIN messages m ON m.conversation_id = c.id
-            WHERE lower(m.content) LIKE ?
-            ORDER BY c.updated_at DESC
-            LIMIT 50
-            """,
-            (f"%{query.lower()}%",),
-        ).fetchall()
+    rows = db.session.query(Conversation.id, Conversation.title, Conversation.updated_at, Message.content)\
+        .join(Message, Message.conversation_id == Conversation.id)\
+        .filter(Message.content.ilike(f"%{query}%"))\
+        .distinct()\
+        .order_by(Conversation.updated_at.desc())\
+        .limit(50).all()
+
     results = []
     for row in rows:
-        d = dict(row)
-        # Trim snippet to 200 chars around the match
-        content = d.get("snippet", "")
+        d = {
+            "id": row[0],
+            "title": row[1],
+            "updated_at": row[2],
+            "snippet": row[3]
+        }
+        content = d["snippet"] or ""
         idx = content.lower().find(query.lower())
         if idx >= 0:
             start = max(0, idx - 80)
-            end   = min(len(content), idx + 120)
+            end = min(len(content), idx + 120)
             d["snippet"] = ("…" if start > 0 else "") + content[start:end] + ("…" if end < len(content) else "")
         results.append(d)
     return results
@@ -724,136 +660,95 @@ def search_all_conversations(query: str) -> list[dict]:
 # ── Linked folders ─────────────────────────────────────────────────────────────
 
 def add_linked_folder(conversation_id: int, folder_path: str) -> dict:
-    now = _now()
-    with get_connection() as conn:
-        # Prevent exact duplicates on the same conversation
-        existing = conn.execute(
-            "SELECT id FROM linked_folders WHERE conversation_id = ? AND folder_path = ?",
-            (conversation_id, folder_path),
-        ).fetchone()
-        if existing:
-            row = conn.execute(
-                "SELECT id, conversation_id, folder_path, created_at FROM linked_folders WHERE id = ?",
-                (existing["id"],),
-            ).fetchone()
-            return dict(row)
-        cur = conn.execute(
-            "INSERT INTO linked_folders (conversation_id, folder_path, created_at) VALUES (?, ?, ?)",
-            (conversation_id, folder_path, now),
-        )
-        row = conn.execute(
-            "SELECT id, conversation_id, folder_path, created_at FROM linked_folders WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    existing = LinkedFolder.query.filter_by(conversation_id=conversation_id, folder_path=folder_path).first()
+    if existing:
+        return existing.to_dict()
+
+    lf = LinkedFolder(
+        conversation_id=conversation_id,
+        folder_path=folder_path,
+        created_at=_now()
+    )
+    db.session.add(lf)
+    db.session.commit()
+    return lf.to_dict()
 
 
 def list_linked_folders(conversation_id: int) -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, conversation_id, folder_path, created_at "
-            "FROM linked_folders WHERE conversation_id = ? ORDER BY created_at ASC",
-            (conversation_id,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = LinkedFolder.query.filter_by(conversation_id=conversation_id).order_by(LinkedFolder.created_at.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def get_linked_folder(folder_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, conversation_id, folder_path, created_at FROM linked_folders WHERE id = ?",
-            (folder_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    lf = db.session.get(LinkedFolder, folder_id)
+    return lf.to_dict() if lf else None
 
 
 def delete_linked_folder(folder_id: int):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM linked_folders WHERE id = ?", (folder_id,))
+    lf = db.session.get(LinkedFolder, folder_id)
+    if lf:
+        db.session.delete(lf)
+        db.session.commit()
 
 
 # ── Folders ────────────────────────────────────────────────────────────────────
 
 def list_folders() -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, name, position, created_at, updated_at FROM folders ORDER BY position ASC, name ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = Folder.query.order_by(Folder.position.asc(), Folder.name.asc()).all()
+    return [r.to_dict() for r in rows]
 
 
 def get_folder(folder_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, name, position, created_at, updated_at FROM folders WHERE id = ?",
-            (folder_id,),
-        ).fetchone()
-    return dict(row) if row else None
+    f = db.session.get(Folder, folder_id)
+    return f.to_dict() if f else None
 
 
 def create_folder(name: str) -> dict:
     now = _now()
-    with get_connection() as conn:
-        max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) FROM folders").fetchone()[0]
-        cur = conn.execute(
-            "INSERT INTO folders (name, position, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (name, max_pos + 1, now, now),
-        )
-        row = conn.execute(
-            "SELECT id, name, position, created_at, updated_at FROM folders WHERE id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
-    return dict(row)
+    max_pos = db.session.query(db.func.max(Folder.position)).scalar()
+    if max_pos is None:
+        max_pos = -1
+
+    f = Folder(name=name, position=max_pos + 1, created_at=now, updated_at=now)
+    db.session.add(f)
+    db.session.commit()
+    return f.to_dict()
 
 
 def update_folder(folder_id: int, name: str = None, position: int = None):
-    fields, params = [], []
-    if name is not None:
-        fields.append("name = ?")
-        params.append(name)
-    if position is not None:
-        fields.append("position = ?")
-        params.append(position)
-    if not fields:
+    f = db.session.get(Folder, folder_id)
+    if not f:
         return
-    fields.append("updated_at = ?")
-    params.append(_now())
-    params.append(folder_id)
-    with get_connection() as conn:
-        conn.execute(
-            f"UPDATE folders SET {', '.join(fields)} WHERE id = ?", params
-        )
+    if name is not None:
+        f.name = name
+    if position is not None:
+        f.position = position
+    f.updated_at = _now()
+    db.session.commit()
 
 
 def delete_folder(folder_id: int):
-    """Delete a folder. Conversations inside it become un-grouped (folder_id → NULL)."""
-    with get_connection() as conn:
-        conn.execute("UPDATE conversations SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
-        conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+    Conversation.query.filter_by(folder_id=folder_id).update({Conversation.folder_id: None})
+    f = db.session.get(Folder, folder_id)
+    if f:
+        db.session.delete(f)
+        db.session.commit()
 
 
 # ── Purge ──────────────────────────────────────────────────────────────────────
 
 def purge_all_conversations() -> dict:
-    """
-    Delete every conversation, message, conv_file record, and linked_folder
-    record. Settings and personas are left untouched.
-    Returns a summary dict with counts of what was deleted.
-    """
     import shutil
 
-    with get_connection() as conn:
-        file_count   = conn.execute("SELECT COUNT(*) FROM conv_files").fetchone()[0]
-        msg_count    = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        conv_count   = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        folder_count = conn.execute("SELECT COUNT(*) FROM linked_folders").fetchone()[0]
+    file_count = ConvFile.query.count()
+    msg_count = Message.query.count()
+    conv_count = Conversation.query.count()
+    folder_count = LinkedFolder.query.count()
 
-        # CASCADE deletes handle messages, conv_files, linked_folders automatically
-        conn.execute("DELETE FROM conversations")
+    # Cascade deletes handle messages, conv_files, linked_folders automatically
+    Conversation.query.delete()
+    db.session.commit()
 
-    # Wipe the entire uploads directory and recreate it empty.
-    # This catches both DB-tracked files and any orphaned files left from
-    # previous purges or manual deletions of DB records.
     uploads_root = os.path.join(os.path.dirname(__file__), "uploads")
     deleted_files = 0
     if os.path.isdir(uploads_root):
@@ -863,10 +758,10 @@ def purge_all_conversations() -> dict:
     os.makedirs(uploads_root, exist_ok=True)
 
     return {
-        "conversations":  conv_count,
-        "messages":       msg_count,
-        "files":          file_count,
-        "files_deleted":  deleted_files,
+        "conversations": conv_count,
+        "messages": msg_count,
+        "files": file_count,
+        "files_deleted": deleted_files,
         "linked_folders": folder_count,
     }
 

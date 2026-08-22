@@ -13,3 +13,5 @@ openai==1.82.0
 pypdf==5.1.0
 python-docx==1.1.2
 openpyxl==3.1.5
+flask-sqlalchemy==3.1.1
+pymysql==1.1.1
