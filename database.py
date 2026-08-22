@@ -119,7 +119,7 @@ class Endpoint(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(255), nullable=False)
     base_url = db.Column(db.String(512), nullable=False)
-    api_key = db.Column(db.String(512), nullable=False, default='')
+    api_key = db.Column(db.Text, nullable=False, default='')
     default_model = db.Column(db.String(255), nullable=False, default='')
     is_default = db.Column(db.Integer, nullable=False, default=0, index=True)
     model_filter = db.Column(db.String(512), nullable=False, default='')

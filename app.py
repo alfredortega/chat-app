@@ -368,136 +368,141 @@ def chat(conv_id):
 
     def generate():
         """Stream SSE events back to the browser."""
-        # Send updated title if this was the first message
-        if len(user_messages) == 1:
-            title_event = json.dumps({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
-            yield f"data: {title_event}\n\n"
+        ctx = app.app_context()
+        ctx.push()
+        try:
+            # Send updated title if this was the first message
+            if len(user_messages) == 1:
+                title_event = json.dumps({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
+                yield f"data: {title_event}\n\n"
 
-        base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
-        tools_on = _tools_enabled(conv)
-        system_prompt = {"role": "system", "content": base_system}
+            base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+            tools_on = _tools_enabled(conv)
+            system_prompt = {"role": "system", "content": base_system}
 
-        # Fix #3: reuse already-fetched messages for API history (no second DB query)
-        history = [system_prompt] + _build_api_messages(messages_so_far)
+            # Fix #3: reuse already-fetched messages for API history (no second DB query)
+            history = [system_prompt] + _build_api_messages(messages_so_far)
 
-        client = get_client(endpoint)
+            client = get_client(endpoint)
 
-        # We loop only when the model issues tool calls; plain replies exit immediately.
-        while True:
-            try:
-                create_kwargs = {
-                    "model": model_id,
-                    "messages": history,
-                    "stream": True,
-                }
-                if tools_on:
-                    create_kwargs["tools"] = TOOLS
-                    create_kwargs["tool_choice"] = "auto"
-                stream = client.chat.completions.create(**create_kwargs)
-            except Exception as exc:
-                err = json.dumps({"type": "error", "message": str(exc)})
-                yield f"data: {err}\n\n"
-                return
-
-            # Accumulate the full streamed response before deciding what to do
-            assistant_content = ""
-            tool_calls_accum = {}   # index -> {id, name, arguments}
-            final_finish_reason = None
-
-            for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if choice is None:
-                    continue
-
-                delta = choice.delta
-
-                # Stream text tokens to the browser as they arrive
-                if delta.content is not None:
-                    assistant_content += delta.content
-                    if delta.content:   # don't send empty string tokens
-                        token_event = json.dumps({"type": "token", "content": delta.content})
-                        yield f"data: {token_event}\n\n"
-
-                # Accumulate tool-call fragments
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_accum:
-                            tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc.id:
-                            tool_calls_accum[idx]["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            tool_calls_accum[idx]["name"] = tc.function.name
-                        if tc.function and tc.function.arguments:
-                            tool_calls_accum[idx]["arguments"] += tc.function.arguments
-
-                # Capture the finish reason (arrives on the last chunk)
-                if choice.finish_reason is not None:
-                    final_finish_reason = choice.finish_reason
-
-            # ── Tool-call branch ──────────────────────────────────────────────
-            if tool_calls_accum:
-                tc_list = [
-                    {
-                        "id": v["id"],
-                        "type": "function",
-                        "function": {"name": v["name"], "arguments": v["arguments"]},
+            # We loop only when the model issues tool calls; plain replies exit immediately.
+            while True:
+                try:
+                    create_kwargs = {
+                        "model": model_id,
+                        "messages": history,
+                        "stream": True,
                     }
-                    for v in tool_calls_accum.values()
-                ]
+                    if tools_on:
+                        create_kwargs["tools"] = TOOLS
+                        create_kwargs["tool_choice"] = "auto"
+                    stream = client.chat.completions.create(**create_kwargs)
+                except Exception as exc:
+                    err = json.dumps({"type": "error", "message": str(exc)})
+                    yield f"data: {err}\n\n"
+                    return
 
-                # Persist the assistant's tool-call message
-                db.add_message(
-                    conv_id,
-                    role="assistant",
-                    content=assistant_content,
-                    tool_calls_json=json.dumps(tc_list),
-                )
-                history.append({
-                    "role": "assistant",
-                    "content": assistant_content or None,
-                    "tool_calls": tc_list,
-                })
+                # Accumulate the full streamed response before deciding what to do
+                assistant_content = ""
+                tool_calls_accum = {}   # index -> {id, name, arguments}
+                final_finish_reason = None
 
-                # Execute each tool and feed the results back into history
-                for tc in tc_list:
-                    fn_name = tc["function"]["name"]
-                    fn_args = tc["function"]["arguments"]
-                    tool_call_id = tc["id"]
+                for chunk in stream:
+                    choice = chunk.choices[0] if chunk.choices else None
+                    if choice is None:
+                        continue
 
-                    result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+                    delta = choice.delta
 
-                    # Notify the browser
-                    tool_event = json.dumps({
-                        "type": "tool_result",
-                        "success": result["success"],
-                        "display": result["display"],
-                    })
-                    yield f"data: {tool_event}\n\n"
+                    # Stream text tokens to the browser as they arrive
+                    if delta.content is not None:
+                        assistant_content += delta.content
+                        if delta.content:   # don't send empty string tokens
+                            token_event = json.dumps({"type": "token", "content": delta.content})
+                            yield f"data: {token_event}\n\n"
 
-                    # Persist tool result and add to history
+                    # Accumulate tool-call fragments
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_accum:
+                                tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc.id:
+                                tool_calls_accum[idx]["id"] = tc.id
+                            if tc.function and tc.function.name:
+                                tool_calls_accum[idx]["name"] = tc.function.name
+                            if tc.function and tc.function.arguments:
+                                tool_calls_accum[idx]["arguments"] += tc.function.arguments
+
+                    # Capture the finish reason (arrives on the last chunk)
+                    if choice.finish_reason is not None:
+                        final_finish_reason = choice.finish_reason
+
+                # ── Tool-call branch ──────────────────────────────────────────────
+                if tool_calls_accum:
+                    tc_list = [
+                        {
+                            "id": v["id"],
+                            "type": "function",
+                            "function": {"name": v["name"], "arguments": v["arguments"]},
+                        }
+                        for v in tool_calls_accum.values()
+                    ]
+
+                    # Persist the assistant's tool-call message
                     db.add_message(
                         conv_id,
-                        role="tool",
-                        content=result["result"],
-                        tool_call_id=tool_call_id,
+                        role="assistant",
+                        content=assistant_content,
+                        tool_calls_json=json.dumps(tc_list),
                     )
                     history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": result["result"],
+                        "role": "assistant",
+                        "content": assistant_content or None,
+                        "tool_calls": tc_list,
                     })
 
-                # Let the model continue after receiving the tool results
-                continue
+                    # Execute each tool and feed the results back into history
+                    for tc in tc_list:
+                        fn_name = tc["function"]["name"]
+                        fn_args = tc["function"]["arguments"]
+                        tool_call_id = tc["id"]
 
-            # ── Plain text branch ─────────────────────────────────────────────
-            else:
-                if assistant_content:
-                    db.add_message(conv_id, role="assistant", content=assistant_content)
-                done_event = json.dumps({"type": "done"})
-                yield f"data: {done_event}\n\n"
-                return
+                        result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+
+                        # Notify the browser
+                        tool_event = json.dumps({
+                            "type": "tool_result",
+                            "success": result["success"],
+                            "display": result["display"],
+                        })
+                        yield f"data: {tool_event}\n\n"
+
+                        # Persist tool result and add to history
+                        db.add_message(
+                            conv_id,
+                            role="tool",
+                            content=result["result"],
+                            tool_call_id=tool_call_id,
+                        )
+                        history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": result["result"],
+                        })
+
+                    # Let the model continue after receiving the tool results
+                    continue
+
+                # ── Plain text branch ─────────────────────────────────────────────
+                else:
+                    if assistant_content:
+                        db.add_message(conv_id, role="assistant", content=assistant_content)
+                    done_event = json.dumps({"type": "done"})
+                    yield f"data: {done_event}\n\n"
+                    return
+        finally:
+            ctx.pop()
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
@@ -528,64 +533,69 @@ def regenerate(conv_id):
     model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
     def generate():
-        # Fix #1: delegate to shared helpers instead of duplicating the logic
-        base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
-        tools_on = _tools_enabled(conv)
-        history  = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
-        client   = get_client(endpoint)
+        ctx = app.app_context()
+        ctx.push()
+        try:
+            # Fix #1: delegate to shared helpers instead of duplicating the logic
+            base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+            tools_on = _tools_enabled(conv)
+            history  = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
+            client   = get_client(endpoint)
 
-        while True:
-            try:
-                create_kwargs = {"model": model_id, "messages": history, "stream": True}
-                if tools_on:
-                    create_kwargs["tools"] = TOOLS
-                    create_kwargs["tool_choice"] = "auto"
-                stream = client.chat.completions.create(**create_kwargs)
-            except Exception as exc:
-                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
-                return
+            while True:
+                try:
+                    create_kwargs = {"model": model_id, "messages": history, "stream": True}
+                    if tools_on:
+                        create_kwargs["tools"] = TOOLS
+                        create_kwargs["tool_choice"] = "auto"
+                    stream = client.chat.completions.create(**create_kwargs)
+                except Exception as exc:
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+                    return
 
-            assistant_content = ""
-            tool_calls_accum  = {}
-            for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
+                assistant_content = ""
+                tool_calls_accum  = {}
+                for chunk in stream:
+                    choice = chunk.choices[0] if chunk.choices else None
+                    if not choice:
+                        continue
+                    delta = choice.delta
+                    if delta.content is not None:
+                        assistant_content += delta.content
+                        if delta.content:
+                            yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_accum:
+                                tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc.id:
+                                tool_calls_accum[idx]["id"] = tc.id
+                            if tc.function and tc.function.name:
+                                tool_calls_accum[idx]["name"] = tc.function.name
+                            if tc.function and tc.function.arguments:
+                                tool_calls_accum[idx]["arguments"] += tc.function.arguments
+
+                if tool_calls_accum:
+                    tc_list = [
+                        {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
+                        for v in tool_calls_accum.values()
+                    ]
+                    db.add_message(conv_id, "assistant", assistant_content, tool_calls_json=json.dumps(tc_list))
+                    history.append({"role": "assistant", "content": assistant_content or None, "tool_calls": tc_list})
+                    for tc in tc_list:
+                        result = execute_tool_call(tc["function"]["name"], tc["function"]["arguments"], output_dir=output_dir)
+                        yield f"data: {json.dumps({'type': 'tool_result', 'success': result['success'], 'display': result['display']})}\n\n"
+                        db.add_message(conv_id, "tool", result["result"], tool_call_id=tc["id"])
+                        history.append({"role": "tool", "tool_call_id": tc["id"], "content": result["result"]})
                     continue
-                delta = choice.delta
-                if delta.content is not None:
-                    assistant_content += delta.content
-                    if delta.content:
-                        yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_accum:
-                            tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc.id:
-                            tool_calls_accum[idx]["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            tool_calls_accum[idx]["name"] = tc.function.name
-                        if tc.function and tc.function.arguments:
-                            tool_calls_accum[idx]["arguments"] += tc.function.arguments
-
-            if tool_calls_accum:
-                tc_list = [
-                    {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
-                    for v in tool_calls_accum.values()
-                ]
-                db.add_message(conv_id, "assistant", assistant_content, tool_calls_json=json.dumps(tc_list))
-                history.append({"role": "assistant", "content": assistant_content or None, "tool_calls": tc_list})
-                for tc in tc_list:
-                    result = execute_tool_call(tc["function"]["name"], tc["function"]["arguments"], output_dir=output_dir)
-                    yield f"data: {json.dumps({'type': 'tool_result', 'success': result['success'], 'display': result['display']})}\n\n"
-                    db.add_message(conv_id, "tool", result["result"], tool_call_id=tc["id"])
-                    history.append({"role": "tool", "tool_call_id": tc["id"], "content": result["result"]})
-                continue
-            else:
-                if assistant_content:
-                    db.add_message(conv_id, "assistant", assistant_content)
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
+                else:
+                    if assistant_content:
+                        db.add_message(conv_id, "assistant", assistant_content)
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+        finally:
+            ctx.pop()
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
