@@ -122,6 +122,7 @@ def _public_endpoint(ep: dict) -> dict:
     out["api_key_set"] = bool((ep.get("api_key") or "").strip())
     out["is_default"] = bool(ep.get("is_default"))
     out["default_model"] = ep.get("default_model") or ""
+    out["model_filter"] = ep.get("model_filter") or ""
     return out
 
 
@@ -137,11 +138,13 @@ def create_endpoint():
     base_url = (data.get("base_url") or "").strip()
     api_key  = (data.get("api_key") or "").strip()
     default_model = (data.get("default_model") or "").strip()
+    model_filter  = (data.get("model_filter") or "").strip()
     is_default = bool(data.get("is_default"))
     if not name or not base_url:
         return jsonify({"error": "name and base_url are required"}), 400
     ep = db.create_endpoint(name=name, base_url=base_url, api_key=api_key,
-                            default_model=default_model, is_default=is_default)
+                            default_model=default_model, is_default=is_default,
+                            model_filter=model_filter)
     return jsonify(_public_endpoint(ep)), 201
 
 
@@ -158,6 +161,7 @@ def update_endpoint(endpoint_id):
     if api_key is not None and not str(api_key).strip():
         api_key = None
     default_model = data.get("default_model")
+    model_filter  = data.get("model_filter")
     is_default = data.get("is_default") if "is_default" in data else None
     updated = db.update_endpoint(
         endpoint_id,
@@ -166,6 +170,7 @@ def update_endpoint(endpoint_id):
         api_key=(api_key.strip() if isinstance(api_key, str) else None),
         default_model=(default_model.strip() if isinstance(default_model, str) else None),
         is_default=(bool(is_default) if is_default is not None else None),
+        model_filter=(model_filter.strip() if isinstance(model_filter, str) else None),
     )
     return jsonify(_public_endpoint(updated))
 
@@ -184,38 +189,24 @@ def delete_endpoint(endpoint_id):
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
     return jsonify({
-        "default_model":  db.get_setting("default_model")  or "",
         "output_dir":     db.get_setting("output_dir")     or "",
         "browser_root":   db.get_setting("browser_root")   or "",
-        "context_window": db.get_setting("context_window") or "128000",
     })
 
 
 @app.route("/api/settings", methods=["PUT"])
 def update_settings():
     data = request.get_json(force=True)
-    context_window = None
-    if "context_window" in data:
-        try:
-            context_window = int(data["context_window"])
-        except (TypeError, ValueError):
-            return jsonify({"error": "context_window must be a positive integer"}), 400
-        if context_window <= 0:
-            return jsonify({"error": "context_window must be a positive integer"}), 400
-    if "default_model" in data:
-        db.set_setting("default_model", data["default_model"])
     if "output_dir" in data:
         db.set_setting("output_dir", data["output_dir"])
     if "browser_root" in data:
         db.set_setting("browser_root", data["browser_root"])
-    if context_window is not None:
-        db.set_setting("context_window", str(context_window))
     return jsonify({"ok": True})
 
 
 @app.route("/api/settings/reset", methods=["POST"])
 def reset_settings():
-    """Reset the default model, fallback (endpoint) default model,
+    """Reset the endpoint default model,
     browser starting path and default output folder to empty."""
     result = db.reset_settings()
     return jsonify({"ok": True, "settings": result})
@@ -269,7 +260,6 @@ def create_conversation():
     model_id = (
         data.get("model_id")
         or (ep.get("default_model") if ep else "")
-        or db.get_setting("default_model")
         or ""
     )
     title = data.get("title", "New Conversation")
@@ -359,7 +349,7 @@ def chat(conv_id):
 
     # Fix #10: resolve endpoint once; reuse for both model_id fallback and client
     endpoint   = _endpoint_for_conversation(conv)
-    model_id   = conv["model_id"] or (endpoint or {}).get("default_model") or db.get_setting("default_model") or ""
+    model_id   = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
     def generate():
         """Stream SSE events back to the browser."""
@@ -520,7 +510,7 @@ def regenerate(conv_id):
 
     # Fix #10: resolve endpoint once; reuse for both model_id fallback and client
     endpoint = _endpoint_for_conversation(conv)
-    model_id = conv["model_id"] or (endpoint or {}).get("default_model") or db.get_setting("default_model") or ""
+    model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
     def generate():
         # Fix #1: delegate to shared helpers instead of duplicating the logic
@@ -640,12 +630,8 @@ def token_count(conv_id):
     total_chars += file_chars
     # Rough approximation: 1 token ≈ 4 characters
     estimated_tokens = total_chars // 4
-    context_window = int(db.get_setting("context_window") or 128000)
-    usage_percent = min(100, round(estimated_tokens / context_window * 100, 1))
     return jsonify({
         "estimated_tokens": estimated_tokens,
-        "context_window": context_window,
-        "usage_percent": usage_percent,
         "message_chars": total_chars - file_chars,
         "file_chars": file_chars,
         "total_chars": total_chars,

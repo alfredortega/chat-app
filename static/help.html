@@ -402,8 +402,7 @@
         <h2 id="models">7. Choosing a Model</h2>
         <p>The <em>Model</em> dropdown in the top bar controls which AI model answers the
         <strong>current</strong> conversation. Changing it affects only that conversation. New
-        conversations start with the <strong>selected endpoint's default model</strong> (falling back
-        to the app-wide fallback model in Settings if the endpoint has none). The available models
+        conversations start with the <strong>selected endpoint's default model</strong>. The available models
         come from the conversation's selected <em>Endpoint</em>, and switching endpoints adopts that
         endpoint's default model automatically.</p>
     <div class="callout">
@@ -442,9 +441,9 @@
       <li><strong>Large files:</strong> if a file (or linked folder) contains a very large amount
       of text, you will be warned, because it can slow responses or reduce answer quality. Very
       large files may be shortened so only the first portion is used.</li>
-      <li>The <strong>context badge</strong> in the chat header shows the estimated percentage
-      of the configured context window in use, colour-coded from grey (comfortable) to red
-      (very large). Set the model's context limit under Settings.</li>
+      <li>The <strong>context badge</strong> in the chat header shows the estimated number of
+      tokens in the current conversation, colour-coded from grey (comfortable) to red
+      (very large).</li>
     </ul>
     <div class="callout">
       <p><strong>Uploaded vs. linked:</strong> <em>Uploaded</em> files are stored with the

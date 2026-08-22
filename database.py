@@ -182,14 +182,13 @@ def init_db():
                 api_key       TEXT    NOT NULL DEFAULT '',
                 default_model TEXT    NOT NULL DEFAULT '',
                 is_default    INTEGER NOT NULL DEFAULT 0,
+                model_filter  TEXT    NOT NULL DEFAULT '',
                 created_at    TEXT    NOT NULL,
                 updated_at    TEXT    NOT NULL
             );
 
-            INSERT OR IGNORE INTO settings (key, value) VALUES ('default_model', '');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('output_dir', '');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('browser_root', '');
-            INSERT OR IGNORE INTO settings (key, value) VALUES ('context_window', '128000');
 
             -- Fix #14: indexes on foreign-key columns used in WHERE clauses
             CREATE INDEX IF NOT EXISTS idx_messages_conv_id       ON messages(conversation_id);
@@ -231,6 +230,12 @@ def init_db():
         except Exception:
             pass  # column already exists
 
+        # Add model_filter column to endpoints if upgrading an existing DB
+        try:
+            conn.execute("ALTER TABLE endpoints ADD COLUMN model_filter TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass  # column already exists
+
         # Add folder_id column to conversations if upgrading an existing DB
         try:
             conn.execute("ALTER TABLE conversations ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL")
@@ -242,6 +247,12 @@ def init_db():
             conn.execute("ALTER TABLE conv_files ADD COLUMN snippet TEXT")
         except Exception:
             pass  # column already exists
+
+        # Remove context_window and default_model if upgrading from old DB
+        try:
+            conn.execute("DELETE FROM settings WHERE key IN ('context_window', 'default_model')")
+        except Exception:
+            pass
 
         # Seed starter personas (skip if they already exist)
         for name, prompt in STARTER_PERSONAS:
@@ -397,14 +408,14 @@ def set_setting(key: str, value: str):
 def reset_settings() -> dict:
     """
     Reset the core configuration settings to empty:
-    default_model, output_dir (default output folder) and browser_root
+    output_dir (default output folder) and browser_root
     (folder browser starting path). Also clears each endpoint's
     default_model so no default/fallback model remains configured.
     Personas, endpoints (other than their default model) and conversations
     are left intact.
     """
     with get_connection() as conn:
-        for key in ("default_model", "output_dir", "browser_root", "context_window"):
+        for key in ("output_dir", "browser_root"):
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, '') "
                 "ON CONFLICT(key) DO UPDATE SET value = ''",
@@ -413,10 +424,8 @@ def reset_settings() -> dict:
         # Clear the per-endpoint default (fallback) model too.
         conn.execute("UPDATE endpoints SET default_model = ''")
     return {
-        "default_model": "",
         "output_dir": "",
         "browser_root": "",
-        "context_window": "128000",
     }
 
 
@@ -425,7 +434,7 @@ def reset_settings() -> dict:
 def list_endpoints() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
             "FROM endpoints ORDER BY is_default DESC, name ASC"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -434,7 +443,7 @@ def list_endpoints() -> list[dict]:
 def get_endpoint(endpoint_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
             "FROM endpoints WHERE id = ?",
             (endpoint_id,),
         ).fetchone()
@@ -444,34 +453,34 @@ def get_endpoint(endpoint_id: int) -> dict | None:
 def get_default_endpoint() -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
             "FROM endpoints WHERE is_default = 1 ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         if row is None:
             # Fall back to any endpoint if none is explicitly marked default
             row = conn.execute(
-                "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+                "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
                 "FROM endpoints ORDER BY id ASC LIMIT 1"
             ).fetchone()
     return dict(row) if row else None
 
 
-def create_endpoint(name: str, base_url: str, api_key: str = "", default_model: str = "", is_default: bool = False) -> dict:
+def create_endpoint(name: str, base_url: str, api_key: str = "", default_model: str = "", is_default: bool = False, model_filter: str = "") -> dict:
     now = _now()
     with get_connection() as conn:
         if is_default:
             conn.execute("UPDATE endpoints SET is_default = 0")
         cur = conn.execute(
-            "INSERT INTO endpoints (name, base_url, api_key, default_model, is_default, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, base_url, api_key, default_model, 1 if is_default else 0, now, now),
+            "INSERT INTO endpoints (name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, base_url, api_key, default_model, 1 if is_default else 0, model_filter, now, now),
         )
         # If this is the very first endpoint, make it default regardless.
         total = conn.execute("SELECT COUNT(*) FROM endpoints").fetchone()[0]
         if total == 1:
             conn.execute("UPDATE endpoints SET is_default = 1 WHERE id = ?", (cur.lastrowid,))
         row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
             "FROM endpoints WHERE id = ?",
             (cur.lastrowid,),
         ).fetchone()
@@ -479,7 +488,7 @@ def create_endpoint(name: str, base_url: str, api_key: str = "", default_model: 
 
 
 def update_endpoint(endpoint_id: int, name: str = None, base_url: str = None,
-                    api_key: str = None, default_model: str = None, is_default: bool = None) -> dict | None:
+                    api_key: str = None, default_model: str = None, is_default: bool = None, model_filter: str = None) -> dict | None:
     fields, params = [], []
     if name is not None:
         fields.append("name = ?")
@@ -493,6 +502,9 @@ def update_endpoint(endpoint_id: int, name: str = None, base_url: str = None,
     if default_model is not None:
         fields.append("default_model = ?")
         params.append(default_model)
+    if model_filter is not None:
+        fields.append("model_filter = ?")
+        params.append(model_filter)
     with get_connection() as conn:
         # Handle default flag exclusively (only one endpoint may be default).
         if is_default is True:
@@ -510,7 +522,7 @@ def update_endpoint(endpoint_id: int, name: str = None, base_url: str = None,
                 f"UPDATE endpoints SET {', '.join(fields)} WHERE id = ?", params
             )
         row = conn.execute(
-            "SELECT id, name, base_url, api_key, default_model, is_default, created_at, updated_at "
+            "SELECT id, name, base_url, api_key, default_model, is_default, model_filter, created_at, updated_at "
             "FROM endpoints WHERE id = ?",
             (endpoint_id,),
         ).fetchone()

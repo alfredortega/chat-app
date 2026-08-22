@@ -6,8 +6,6 @@ const App = {
   models: [],
   personas: [],
   endpoints: [],        // [{ id, name, base_url, api_key_set, is_default }]
-  defaultModel: "",
-  contextWindow: 128000,
   outputDir: "",        // app-level default (from settings)
   convOutputDir: "",    // per-conversation override (empty = use app default)
   browserRoot: "",
@@ -226,6 +224,9 @@ const App = {
     const reloadEpModels = () => this._reloadEndpointModelsFromInputs();
     document.getElementById("endpointUrlInput").addEventListener("blur", reloadEpModels);
     document.getElementById("endpointKeyInput").addEventListener("blur", reloadEpModels);
+    document.getElementById("endpointModelFilterInput").addEventListener("input", () => {
+      this._fillEndpointModelSelect(this._loadedEndpointModelsList || []);
+    });
 
     // Load the optional model probe separately so an unavailable provider does
     // not prevent database-backed data from rendering.
@@ -245,10 +246,13 @@ const App = {
       ]);
       this.personas = personasData        || [];
       this.endpoints = endpointsData      || [];
-      this.defaultModel = settingsData.default_model || "";
-      this.contextWindow = Number(settingsData.context_window) || 128000;
       this.outputDir    = settingsData.output_dir    || "";
       this.browserRoot  = settingsData.browser_root  || "";
+      const ep = this._currentEndpoint();
+      if (ep && ep.model_filter && ep.model_filter.trim()) {
+        const filterText = ep.model_filter.trim().toLowerCase();
+        this.models = this.models.filter((m) => m.toLowerCase().includes(filterText));
+      }
       this._populateModelSelects();
       this._populatePersonaSelects();
       this._populateEndpointSelects();
@@ -273,9 +277,9 @@ const App = {
   },
 
   /**
-   * Open the Settings modal on startup when the default model, fallback
-   * default model, folder browser starting path or default output folder
-   * have not yet been configured.
+   * Open the Settings modal on startup when the fallback default model,
+   * folder browser starting path or default output folder have not yet
+   * been configured.
    */
   _promptSettingsIfIncomplete() {
     // The "fallback default model" is any endpoint-level default model.
@@ -283,7 +287,6 @@ const App = {
       (e) => e && (e.default_model || "").trim()
     );
     const missing =
-      !(this.defaultModel || "").trim() ||
       !anyEndpointDefault ||
       !(this.browserRoot || "").trim() ||
       !(this.outputDir || "").trim();
@@ -302,18 +305,14 @@ const App = {
     ).join("");
     this.modelSelect.innerHTML = opts || '<option value="">No models found</option>';
 
-    // Apply the default model to the navbar selector immediately
-    if (this.defaultModel && this.modelSelect.querySelector(`option[value="${this.defaultModel}"]`)) {
-      this.modelSelect.value = this.defaultModel;
+    // Apply the endpoint's default model to the navbar selector immediately
+    const ep = this._currentEndpoint();
+    const epDefault = ep && ep.default_model ? ep.default_model : "";
+    if (epDefault && this.modelSelect.querySelector(`option[value="${epDefault}"]`)) {
+      this.modelSelect.value = epDefault;
     } else if (this.models.length > 0) {
       this.modelSelect.selectedIndex = 0;
     }
-
-    // Settings default model selector
-    const defSel = document.getElementById("defaultModelSelect");
-    defSel.innerHTML =
-      '<option value="">— Select a default model —</option>' + opts;
-    defSel.value = this.defaultModel;
   },
 
   /** Called when the user changes the model selector in the navbar */
@@ -330,7 +329,8 @@ const App = {
 
   /** Sync the navbar model selector to the active conversation's model */
   _syncModelSelect(modelId) {
-    const val = modelId || this.defaultModel;
+    const ep = this._currentEndpoint();
+    const val = modelId || (ep && ep.default_model) || "";
     if (val && this.modelSelect.querySelector(`option[value="${val}"]`)) {
       this.modelSelect.value = val;
     } else if (this.models.length > 0) {
@@ -518,7 +518,15 @@ const App = {
   async _refreshModelsForCurrentEndpoint(opts = {}) {
     try {
       const data = await API.getModelsForEndpoint(this.convEndpointId || null);
-      this.models = data.models || [];
+      let list = data.models || [];
+      const ep = this._currentEndpoint();
+      if (ep && ep.model_filter) {
+        const filterText = ep.model_filter.trim().toLowerCase();
+        if (filterText) {
+          list = list.filter((m) => m.toLowerCase().includes(filterText));
+        }
+      }
+      this.models = list;
       this._populateModelSelects();
       const conv = this.activeConvId ? Conversations.getById(this.activeConvId) : null;
 
@@ -559,6 +567,7 @@ const App = {
     const keyStatus = document.getElementById("endpointKeyStatus");
     const defaultEl = document.getElementById("endpointDefaultInput");
     const modelSel  = document.getElementById("endpointModelSelect");
+    const filterEl  = document.getElementById("endpointModelFilterInput");
 
     keyEl.value = "";
     keyEl.type  = "password";
@@ -566,6 +575,7 @@ const App = {
 
     // Reset the model dropdown; it's populated on demand once URL+key are known.
     this._endpointModelValue = "";
+    this._loadedEndpointModelsList = [];
     modelSel.innerHTML = '<option value="">— Select a default model —</option>';
 
     if (id) {
@@ -573,6 +583,7 @@ const App = {
       titleEl.textContent = "Edit Endpoint";
       nameEl.value    = ep ? ep.name : "";
       urlEl.value     = ep ? ep.base_url : "";
+      filterEl.value  = ep ? (ep.model_filter || "") : "";
       defaultEl.checked = ep ? !!ep.is_default : false;
       this._endpointModelValue = ep ? (ep.default_model || "") : "";
       keyStatus.textContent = ep && ep.api_key_set
@@ -584,6 +595,7 @@ const App = {
       titleEl.textContent = "New Endpoint";
       nameEl.value    = "";
       urlEl.value     = "";
+      filterEl.value  = "";
       defaultEl.checked = this.endpoints.length === 0; // first one defaults to default
       keyStatus.textContent = "";
       document.getElementById("endpointModelStatus").textContent =
@@ -600,7 +612,8 @@ const App = {
     status.textContent = "Loading models…";
     try {
       const data = await API.getModelsForEndpoint(endpointId);
-      this._fillEndpointModelSelect(data.models || []);
+      this._loadedEndpointModelsList = data.models || [];
+      this._fillEndpointModelSelect(this._loadedEndpointModelsList);
     } catch (err) {
       modelSel.innerHTML = '<option value="">— Select a default model —</option>';
       status.textContent = "Could not load models: " + err.message;
@@ -625,7 +638,8 @@ const App = {
       } else {
         data = await API.getModelsForUrl(baseUrl, apiKey);
       }
-      this._fillEndpointModelSelect(data.models || []);
+      this._loadedEndpointModelsList = data.models || [];
+      this._fillEndpointModelSelect(this._loadedEndpointModelsList);
     } catch (err) {
       status.textContent = "Could not load models: " + err.message;
     }
@@ -635,15 +649,22 @@ const App = {
   _fillEndpointModelSelect(models) {
     const modelSel = document.getElementById("endpointModelSelect");
     const status   = document.getElementById("endpointModelStatus");
-    const opts = models.map((m) => `<option value="${_escAttr(m)}">${_escAttr(m)}</option>`).join("");
+    const filterText = document.getElementById("endpointModelFilterInput").value.trim().toLowerCase();
+
+    // Filter the models based on the model filter textbox value
+    const filteredModels = filterText
+      ? models.filter((m) => m.toLowerCase().includes(filterText))
+      : models;
+
+    const opts = filteredModels.map((m) => `<option value="${_escAttr(m)}">${_escAttr(m)}</option>`).join("");
     modelSel.innerHTML = '<option value="">— Select a default model —</option>' + opts;
     if (this._endpointModelValue &&
         modelSel.querySelector(`option[value="${_escAttr(this._endpointModelValue)}"]`)) {
       modelSel.value = this._endpointModelValue;
     }
-    status.textContent = models.length
+    status.textContent = filteredModels.length
       ? "Pick the model used by default for new conversations on this endpoint."
-      : "No models were returned. Check the URL and API key.";
+      : "No models matched the filter. Check your filter text, URL, and API key.";
   },
 
   async saveEndpoint() {
@@ -652,6 +673,7 @@ const App = {
     const apiKey   = document.getElementById("endpointKeyInput").value.trim();
     const isDefault = document.getElementById("endpointDefaultInput").checked;
     const defaultModel = document.getElementById("endpointModelSelect").value;
+    const modelFilter = document.getElementById("endpointModelFilterInput").value.trim();
 
     if (!name || !baseUrl) {
       alert("Both a name and an API base URL are required.");
@@ -669,7 +691,7 @@ const App = {
       return;
     }
 
-    const payload = { name, base_url: baseUrl, is_default: isDefault };
+    const payload = { name, base_url: baseUrl, is_default: isDefault, model_filter: modelFilter };
     if (apiKey) payload.api_key = apiKey;
     if (hasModelOptions || defaultModel) payload.default_model = defaultModel;
 
@@ -682,6 +704,10 @@ const App = {
       // Reload the endpoint list from the server (default flag is exclusive)
       this.endpoints = await API.listEndpoints();
       this._populateEndpointSelects();
+      // If we edited the active endpoint, refresh models on main page to apply updated filter immediately
+      if (this._editingEndpointId === this.convEndpointId || (!this.convEndpointId && isDefault)) {
+        await this._refreshModelsForCurrentEndpoint();
+      }
     } catch (err) {
       alert("Failed to save endpoint: " + err.message);
     } finally {
@@ -813,13 +839,12 @@ const App = {
     const personaId = this.personaSelect.value ? parseInt(this.personaSelect.value) : null;
     const endpointId = this.endpointSelect && this.endpointSelect.value ? parseInt(this.endpointSelect.value) : null;
     // Resolve the model: explicit selection, else the chosen endpoint's default,
-    // else the active endpoint's default, else the app-level default.
+    // else the active endpoint's default.
     const ep = endpointId
       ? this.endpoints.find((e) => e.id === endpointId)
       : this._currentEndpoint();
     const modelId = this.modelSelect.value
-      || (ep && ep.default_model)
-      || this.defaultModel;
+      || (ep && ep.default_model);
     try {
       const conv = await API.createConversation(modelId, personaId, endpointId, folderId);
       Conversations.add(conv);
@@ -1021,14 +1046,9 @@ const App = {
       // conversations while this request was in flight.
       if (convId !== this.activeConvId) return;
       const t = data.estimated_tokens;
-      const contextWindow = data.context_window || this.contextWindow;
-      const pct = data.usage_percent ?? Math.min(100, Math.round(t / contextWindow * 1000) / 10);
-      const contextLabel = contextWindow >= 1000
-        ? `${(contextWindow / 1000).toFixed(contextWindow % 1000 ? 1 : 0)}k`
-        : contextWindow;
-      const label = `Context Used ${pct}% of ${contextLabel}`;
+      const label = `${t.toLocaleString()} tokens`;
       this.tokenCountBadge.textContent = label;
-      this.tokenCountBadge.title = `Estimated ${t.toLocaleString()} tokens of ${contextWindow.toLocaleString()} available`;
+      this.tokenCountBadge.title = `Estimated token count of this conversation`;
       this.tokenCountBadge.classList.remove("d-none", "bg-danger", "bg-warning", "bg-secondary");
       // Colour-code: green < 50k, yellow < 100k, red >= 100k
       if (t >= 100000)      this.tokenCountBadge.classList.add("bg-danger");
@@ -1418,10 +1438,8 @@ const App = {
   // ── Settings ───────────────────────────────────────────────────────────────
 
   openSettings() {
-    document.getElementById("defaultModelSelect").value  = this.defaultModel;
     document.getElementById("settingsBrowserRoot").value = this.browserRoot;
     document.getElementById("settingsOutputDir").value   = this.outputDir;
-    document.getElementById("settingsContextWindow").value = this.contextWindow;
     // Always start with the Reset Database checkbox unticked
     const resetChk = document.getElementById("settingsResetDatabase");
     if (resetChk) resetChk.checked = false;
@@ -1440,22 +1458,18 @@ const App = {
     // If "Reset Database" is ticked, clear the stored values instead of saving.
     if (doReset) {
       const confirmed = confirm(
-        "Reset the default model, fallback default model, folder browser " +
-        "starting path, context window and default output folder?\n\nThis cannot be undone."
+        "Reset the fallback default model, folder browser starting path " +
+        "and default output folder?\n\nThis cannot be undone."
       );
       if (!confirmed) return;
       try {
         const data = await API.resetSettings();
         const s = data.settings || {};
-        this.defaultModel = s.default_model || "";
         this.browserRoot  = s.browser_root  || "";
         this.outputDir    = s.output_dir    || "";
-        this.contextWindow = Number(s.context_window) || 128000;
         // Clear the on-screen fields to reflect the reset
-        document.getElementById("defaultModelSelect").value  = "";
         document.getElementById("settingsBrowserRoot").value = "";
         document.getElementById("settingsOutputDir").value   = "";
-        document.getElementById("settingsContextWindow").value = this.contextWindow;
         // Endpoints' default models were cleared server-side; refresh them.
         try {
           this.endpoints = await API.listEndpoints();
@@ -1470,28 +1484,18 @@ const App = {
       return;
     }
 
-    const newDefault     = document.getElementById("defaultModelSelect").value;
     const newBrowserRoot = document.getElementById("settingsBrowserRoot").value.trim();
     const newOutputDir   = document.getElementById("settingsOutputDir").value.trim();
-    const newContextWindow = Number.parseInt(document.getElementById("settingsContextWindow").value, 10);
-    if (!Number.isInteger(newContextWindow) || newContextWindow <= 0) {
-      document.getElementById("settingsContextWindow").focus();
-      return;
-    }
 
     const payload = {
-      default_model: newDefault,
       browser_root:  newBrowserRoot,
       output_dir:    newOutputDir,
-      context_window: newContextWindow,
     };
 
     try {
       await API.saveSettings(payload);
-      this.defaultModel = newDefault;
       this.browserRoot  = newBrowserRoot;
       this.outputDir    = newOutputDir;
-      this.contextWindow = newContextWindow;
       this._renderOutputDirBtn(); // re-render with updated app default
     } catch (err) {
       console.error("Failed to save settings:", err);

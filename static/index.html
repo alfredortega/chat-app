@@ -262,19 +262,6 @@
 
           <hr class="border-secondary mb-4" />
 
-          <!-- Default model (fallback only) -->
-          <label class="form-label text-secondary">Fallback Default Model</label>
-          <select id="defaultModelSelect" class="form-select border-secondary">
-            <option value="">— Select a default model —</option>
-          </select>
-          <div class="form-text text-secondary mt-1 mb-4">Used only when the active endpoint has no default model of its own. Each endpoint's own default model takes precedence.</div>
-
-          <!-- Context window -->
-          <label class="form-label text-secondary" for="settingsContextWindow">Context Window (tokens)</label>
-          <input type="number" id="settingsContextWindow" class="form-control border-secondary"
-            min="1" step="1" placeholder="128000" />
-          <div class="form-text text-secondary mt-1 mb-4">Used to calculate the context usage percentage. Set this to the limit supported by the active model.</div>
-
           <!-- Browser root -->
           <label class="form-label text-secondary">Folder Browser Starting Path</label>
           <div class="d-flex gap-2 mb-1">
@@ -381,8 +368,8 @@
             </label>
           </div>
           <div class="form-text text-secondary mt-1">
-            When ticked and you click <strong>Save</strong>, this clears the default model,
-            fallback default model, context window, folder browser starting path and default output folder.
+            When ticked and you click <strong>Save</strong>, this clears the
+            fallback default model, folder browser starting path and default output folder.
             Conversations and personas are kept.
           </div>
         </div>
@@ -449,6 +436,11 @@
               </button>
             </div>
             <div id="endpointKeyStatus" class="form-text text-secondary"></div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-secondary">Model Filter</label>
+            <input type="text" id="endpointModelFilterInput" class="form-control border-secondary" placeholder="e.g. gemma, free (optional)" />
+            <div class="form-text text-secondary">If set, only models whose names contain this text will be available for selection.</div>
           </div>
           <div class="mb-3">
             <label class="form-label text-secondary">Default Model</label>
