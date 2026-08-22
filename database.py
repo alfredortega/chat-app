@@ -1,5 +1,5 @@
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
 from datetime import datetime, timezone
 from cryptography.fernet import Fernet
@@ -329,11 +329,24 @@ def init_db(app=None):
         with app.app_context():
             db.create_all()
             _seed_personas_and_settings()
+            _ensure_api_key_column_capacity()
             migrate_existing_api_keys()
     else:
         db.create_all()
         _seed_personas_and_settings()
+        _ensure_api_key_column_capacity()
         migrate_existing_api_keys()
+
+
+def _ensure_api_key_column_capacity():
+    if db.engine.dialect.name in ("mysql", "mariadb"):
+        columns = inspect(db.engine).get_columns("endpoints")
+        api_key_column = next((column for column in columns if column["name"] == "api_key"), None)
+        if api_key_column and "TEXT" not in str(api_key_column["type"]).upper():
+            db.session.execute(text(
+                "ALTER TABLE endpoints MODIFY COLUMN api_key TEXT NOT NULL"
+            ))
+            db.session.commit()
 
 
 def migrate_existing_api_keys():
