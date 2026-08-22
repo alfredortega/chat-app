@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Chat App</title>
+  <link rel="icon" type="image/x-icon" href="/ai.ico" />
+
+  <!-- Bootstrap 5 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+  <!-- Highlight.js (code syntax) -->
+  <link id="hljs-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" />
+
+  <link rel="stylesheet" href="/css/style.css" />
+  <!-- Apply saved theme immediately to avoid flash -->
+  <script>
+    (function () {
+      const t = localStorage.getItem("theme") || "dark";
+      document.documentElement.setAttribute("data-bs-theme", t);
+      if (t === "light") {
+        // The hljs-theme link tag is declared above this script, so it's already in the DOM
+        var lnk = document.getElementById("hljs-theme");
+        if (lnk) lnk.href =
+          "https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css";
+      }
+    })();
+  </script>
+</head>
+<body class="d-flex flex-column vh-100 overflow-hidden">
+
+  <!-- ── Top Navbar ─────────────────────────────────────────────────────── -->
+  <nav class="navbar app-navbar border-bottom border-secondary flex-shrink-0 px-3 py-2">
+    <span class="navbar-brand mb-0 h5 d-flex align-items-center gap-2">
+      <i class="bi bi-robot text-primary"></i> My Chat App
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <!-- Model selector -->
+      <label class="text-secondary small me-1 mb-0" for="modelSelect">Model:</label>
+      <select id="modelSelect" class="form-select form-select-sm border-secondary" style="min-width:220px">
+        <option value="">Loading models…</option>
+      </select>
+      <!-- Theme toggle -->
+      <button class="btn btn-sm btn-outline-secondary" id="btnThemeToggle" title="Toggle dark/light theme">
+        <i class="bi bi-moon-stars-fill"></i>
+      </button>
+      <!-- Help button -->
+      <button class="btn btn-sm btn-outline-secondary" id="btnHelp" title="Help">
+        <i class="bi bi-question-circle"></i>
+      </button>
+      <!-- Settings button -->
+      <button class="btn btn-sm btn-outline-secondary" id="btnSettings" title="Settings">
+        <i class="bi bi-gear"></i>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
+  <div class="d-flex flex-grow-1 overflow-hidden">
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="d-flex flex-column border-end border-secondary flex-shrink-0">
+      <div class="p-2 border-bottom border-secondary d-flex flex-column gap-2">
+        <button id="btnNewChat" class="btn btn-primary btn-sm w-100">
+          <i class="bi bi-plus-lg me-1"></i> New Chat
+        </button>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text border-secondary"><i class="bi bi-search"></i></span>
+          <input type="text" id="searchInput" class="form-control border-secondary"
+            placeholder="Search conversations…" autocomplete="off" />
+          <button class="btn btn-outline-secondary d-none" id="btnSearchClear" title="Clear search"><i class="bi bi-x"></i></button>
+        </div>
+      </div>
+      <div id="convList" class="flex-grow-1 overflow-y-auto py-1">
+        <!-- Conversation items injected here -->
+      </div>
+      <div class="p-2 border-top border-secondary text-secondary text-center"
+           style="font-size:0.72rem;line-height:1.3;font-style:italic">
+        <strong>Disclaimer:</strong> This tool is primarily for research and business analysis tasks. It can produce
+        code and do basic data analysis it is better to use tools like VSCode or Jupyter Notebooks
+        for those kinds of tasks.
+        <br/>
+        Generative AI can make mistakes. Review all responses for accuracy.
+        <br/>
+        <v1 class="0 0"></v1>
+      </div>
+    </aside>
+
+    <!-- Chat area -->
+    <main class="d-flex flex-column flex-grow-1 overflow-hidden">
+
+      <!-- Empty state (shown when no conversation is selected) -->
+      <div id="emptyState" class="d-flex flex-column align-items-center justify-content-center flex-grow-1 text-secondary">
+        <i class="bi bi-chat-dots display-1 mb-3 text-primary opacity-50"></i>
+        <h5 class="mb-1">No conversation selected</h5>
+        <p class="small">Click <strong>New Chat</strong> or select a conversation to begin.</p>
+      </div>
+
+      <!-- Active conversation -->
+      <div id="chatPanel" class="d-flex flex-column flex-grow-1 overflow-hidden d-none">
+
+        <!-- Chat header -->
+        <div class="d-flex align-items-center gap-2 px-3 py-2 border-bottom border-secondary flex-shrink-0" id="chatHeader">
+          <span id="chatTitleDisplay" class="fw-semibold text-truncate" style="max-width:35%"></span>
+          <button id="btnRenameConv" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Rename">
+            <i class="bi bi-pencil"></i>
+          </button>
+          <button id="btnExportConv" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Export chat to markdown file">
+            <i class="bi bi-download"></i>
+          </button>
+          <span id="tokenCountBadge" class="badge bg-secondary ms-1 d-none" title="Estimated context size" style="font-size:0.7rem;cursor:default"></span>
+          <div class="d-flex align-items-center gap-1 ms-auto flex-shrink-0">
+            <label class="text-secondary small mb-0 me-1" for="endpointSelect">Endpoint:</label>
+            <select id="endpointSelect" class="form-select form-select-sm border-secondary" style="min-width:150px" title="API endpoint used for this conversation">
+              <option value="">— Default —</option>
+            </select>
+            <label class="text-secondary small mb-0 me-1" for="btnToggleTools">Use Tools:</label>
+            <button id="btnToggleTools" class="btn btn-sm btn-outline-secondary" title="Toggle tools (function calling) for this conversation">
+              <i class="bi bi-tools"></i>
+            </button>
+            <label class="text-secondary small mb-0 me-1" for="personaSelect">Persona:</label>
+            <select id="personaSelect" class="form-select form-select-sm border-secondary" style="min-width:180px">
+              <option value="">— No Persona —</option>
+            </select>
+          </div>
+          <button id="btnDeleteConv" class="btn btn-sm btn-outline-danger flex-shrink-0" title="Delete conversation">
+            <i class="bi bi-trash"></i>
+          </button>
+        </div>
+
+        <!-- Messages -->
+        <div id="messagesArea" class="flex-grow-1 overflow-y-auto p-3 d-flex flex-column gap-3">
+          <!-- Messages injected here -->
+        </div>
+
+        <!-- Input area -->
+        <div class="border-top border-secondary p-3 flex-shrink-0 app-input-area" id="inputArea">
+
+          <!-- Attached files list -->
+          <div id="attachedFiles" class="d-none mb-2">
+            <div class="d-flex flex-wrap gap-2" id="attachedFilesList"></div>
+          </div>
+
+          <!-- Textarea + Send -->
+          <div class="d-flex gap-2 align-items-end">
+            <textarea
+              id="messageInput"
+              class="form-control border-secondary"
+              rows="3"
+              placeholder="Type your message… (Shift+Enter for new line, Enter to send)"
+            ></textarea>
+            <button id="btnSend" class="btn btn-primary px-3 py-2" style="min-width:52px">
+              <i class="bi bi-send-fill"></i>
+            </button>
+            <button id="btnStop" class="btn btn-danger px-3 py-2 d-none" style="min-width:52px" title="Stop generating">
+              <i class="bi bi-stop-fill"></i>
+            </button>
+          </div>
+
+          <!-- Toolbar: action buttons + stream status -->
+          <div class="d-flex align-items-center gap-1 mt-2">
+            <!-- Single / multi file -->
+            <input type="file" id="fileInput" class="d-none" multiple />
+            <button id="btnUpload" class="btn btn-sm btn-outline-secondary" title="Attach files">
+              <i class="bi bi-paperclip"></i>
+            </button>
+            <!-- Folder upload (copies files) -->
+            <input type="file" id="dirInput" class="d-none" webkitdirectory multiple />
+            <button id="btnUploadDir" class="btn btn-sm btn-outline-secondary" title="Upload folder (copies files to server)">
+              <i class="bi bi-folder-plus"></i>
+            </button>
+            <!-- Link folder or file (reads in-place, no copy) -->
+            <button id="btnLinkFolder" class="btn btn-sm btn-outline-secondary" title="Link folder or file (reads in-place)">
+              <i class="bi bi-folder-symlink"></i>
+            </button>
+            <!-- Import markdown as context -->
+            <input type="file" id="mdContextInput" class="d-none" accept=".md,.markdown,.txt" />
+            <button id="btnImportMd" class="btn btn-sm btn-outline-secondary" title="Import markdown file as context">
+              <i class="bi bi-markdown"></i>
+            </button>
+            <!-- Output folder + popover -->
+            <div class="position-relative">
+              <button id="btnOutputDir" class="btn btn-sm btn-outline-secondary" title="Set output folder">
+                <i class="bi bi-folder2-open"></i>
+              </button>
+              <button id="btnOpenOutputDir" class="btn btn-sm btn-outline-secondary" title="Open output folder in file manager">
+                <i class="bi bi-box-arrow-up-right"></i>
+              </button>
+            </div>
+            <!-- Stream status (fills remaining space) -->
+            <div id="streamStatus" class="text-secondary small ms-2 d-none">
+              <span class="spinner-border spinner-border-sm me-1"></span> Generating…
+            </div>          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ── Rename Modal ────────────────────────────────────────────────────── -->
+  <div class="modal fade" id="renameModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title">Rename Conversation</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="text" id="renameInput" class="form-control border-secondary" placeholder="Conversation title" />
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnRenameConfirm">Rename</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Delete Confirm Modal ────────────────────────────────────────────── -->
+  <div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete Conversation</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          Are you sure you want to delete <strong id="deleteTitleSpan"></strong>? This cannot be undone.
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="btnDeleteConfirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings Modal ─────────────────────────────────────────────────── -->
+  <div class="modal fade" id="settingsModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title"><i class="bi bi-gear me-2"></i>Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <!-- API Endpoints management -->
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-label text-secondary mb-0">API Endpoints</label>
+            <button class="btn btn-sm btn-outline-primary" id="btnNewEndpoint">
+              <i class="bi bi-plus-lg me-1"></i>New Endpoint
+            </button>
+          </div>
+          <div id="endpointList" class="d-flex flex-column gap-2 mb-2" style="max-height:300px;overflow-y:auto;">
+            <!-- Endpoint rows injected here -->
+          </div>
+          <div class="form-text text-secondary mt-1 mb-4">
+            Each endpoint has its own URL, API key and <strong>default model</strong>. Mark one as
+            the default for new conversations; each conversation can also override which endpoint it uses.
+          </div>
+
+          <hr class="border-secondary mb-4" />
+
+          <!-- Default model (fallback only) -->
+          <label class="form-label text-secondary">Fallback Default Model</label>
+          <select id="defaultModelSelect" class="form-select border-secondary">
+            <option value="">— Select a default model —</option>
+          </select>
+          <div class="form-text text-secondary mt-1 mb-4">Used only when the active endpoint has no default model of its own. Each endpoint's own default model takes precedence.</div>
+
+          <!-- Context window -->
+          <label class="form-label text-secondary" for="settingsContextWindow">Context Window (tokens)</label>
+          <input type="number" id="settingsContextWindow" class="form-control border-secondary"
+            min="1" step="1" placeholder="128000" />
+          <div class="form-text text-secondary mt-1 mb-4">Used to calculate the context usage percentage. Set this to the limit supported by the active model.</div>
+
+          <!-- Browser root -->
+          <label class="form-label text-secondary">Folder Browser Starting Path</label>
+          <div class="d-flex gap-2 mb-1">
+            <input type="text" id="settingsBrowserRoot"
+              class="form-control border-secondary"
+              placeholder="e.g. C:/Users/Me/Documents" />
+            <button class="btn btn-outline-secondary flex-shrink-0" id="btnSettingsBrowserRootBrowse" type="button" title="Browse…">
+              <i class="bi bi-folder me-1"></i>Browse…
+            </button>
+          </div>
+          <div class="form-text text-secondary mt-1 mb-2">The folder browser opens here by default. Leave blank to start at your home directory.</div>
+
+          <!-- Inline folder browser for browser root (hidden until Browse clicked) -->
+          <div id="settingsBrowserRootPane" class="d-none mb-4">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <button id="btnSettingsBrowserRootUp" class="btn btn-sm btn-outline-secondary flex-shrink-0" type="button" title="Go up">
+                <i class="bi bi-arrow-up"></i>
+              </button>
+              <nav aria-label="breadcrumb" class="flex-grow-1 min-w-0 overflow-hidden">
+                <ol id="settingsBrowserRootBreadcrumb" class="breadcrumb mb-0 flex-nowrap overflow-hidden small" style="white-space:nowrap"></ol>
+              </nav>
+              <button id="btnSettingsBrowserRootClose" class="btn btn-sm btn-outline-secondary flex-shrink-0" type="button" title="Hide browser">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+            <div id="settingsBrowserRootList" class="border border-secondary rounded"
+                 style="max-height:280px;overflow-y:auto;">
+              <!-- entries injected here -->
+            </div>
+            <div class="mt-2 d-flex justify-content-end">
+              <button class="btn btn-sm btn-outline-primary" id="btnSettingsBrowserRootSelectCurrent" type="button">
+                <i class="bi bi-check-lg me-1"></i>Use this folder
+              </button>
+            </div>
+          </div>
+
+          <!-- Output directory -->
+          <label class="form-label text-secondary">Default Output Folder</label>
+          <div class="d-flex gap-2 mb-1">
+            <input type="text" id="settingsOutputDir"
+              class="form-control border-secondary"
+              placeholder="e.g. C:/Users/Me/Documents/output" />
+            <button class="btn btn-outline-secondary flex-shrink-0" id="btnSettingsOutputDirBrowse" type="button" title="Browse…">
+              <i class="bi bi-folder me-1"></i>Browse…
+            </button>
+          </div>
+          <div class="form-text text-secondary mt-1 mb-2">Files written by the AI will be saved here. Required for file-writing to work correctly.</div>
+
+          <!-- Inline folder browser for output dir (hidden until Browse clicked) -->
+          <div id="settingsOutputDirPane" class="d-none mb-4">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <button id="btnSettingsOutputDirUp" class="btn btn-sm btn-outline-secondary flex-shrink-0" type="button" title="Go up">
+                <i class="bi bi-arrow-up"></i>
+              </button>
+              <nav aria-label="breadcrumb" class="flex-grow-1 min-w-0 overflow-hidden">
+                <ol id="settingsOutputDirBreadcrumb" class="breadcrumb mb-0 flex-nowrap overflow-hidden small" style="white-space:nowrap"></ol>
+              </nav>
+              <button id="btnSettingsOutputDirClose" class="btn btn-sm btn-outline-secondary flex-shrink-0" type="button" title="Hide browser">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+            <div id="settingsOutputDirList" class="border border-secondary rounded"
+                 style="max-height:280px;overflow-y:auto;">
+              <!-- entries injected here -->
+            </div>
+            <div class="mt-2 d-flex justify-content-end">
+              <button class="btn btn-sm btn-outline-primary" id="btnSettingsOutputDirSelectCurrent" type="button">
+                <i class="bi bi-check-lg me-1"></i>Use this folder
+              </button>
+            </div>
+          </div>
+
+          <!-- Personas management -->
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-label text-secondary mb-0">Personas</label>
+            <button class="btn btn-sm btn-outline-primary" id="btnNewPersona">
+              <i class="bi bi-plus-lg me-1"></i>New Persona
+            </button>
+          </div>
+          <div id="personaList" class="d-flex flex-column gap-2" style="max-height:340px;overflow-y:auto;">
+            <!-- Persona rows injected here -->
+          </div>
+
+          <hr class="border-secondary mt-4" />
+
+          <!-- Danger zone -->
+          <div class="d-flex align-items-center justify-content-between">
+            <div>
+              <div class="text-danger fw-semibold small">Purge all conversations</div>
+              <div class="text-secondary" style="font-size:0.78rem">Permanently deletes every conversation, message and uploaded file. Settings and personas are kept.</div>
+            </div>
+            <button class="btn btn-sm btn-outline-danger flex-shrink-0 ms-3" id="btnPurge">
+              <i class="bi bi-trash3 me-1"></i>Purge
+            </button>
+          </div>
+
+          <hr class="border-secondary mt-4" />
+
+          <!-- Reset Database -->
+          <div class="form-check mb-1">
+            <input class="form-check-input" type="checkbox" id="settingsResetDatabase" />
+            <label class="form-check-label text-warning fw-semibold small" for="settingsResetDatabase">
+              Reset Database
+            </label>
+          </div>
+          <div class="form-text text-secondary mt-1">
+            When ticked and you click <strong>Save</strong>, this clears the default model,
+            fallback default model, context window, folder browser starting path and default output folder.
+            Conversations and personas are kept.
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnSettingsSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Persona Edit Modal ──────────────────────────────────────────────── -->
+  <div class="modal fade" id="personaModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="personaModalTitle">New Persona</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label text-secondary">Name</label>
+            <input type="text" id="personaNameInput" class="form-control border-secondary" placeholder="e.g. Python Developer" />
+          </div>
+          <div class="mb-1">
+            <label class="form-label text-secondary">Persona Prompt</label>
+            <textarea id="personaPromptInput" class="form-control border-secondary" rows="8"
+              placeholder="Describe how the model should behave in this persona…"></textarea>
+          </div>
+          <div class="form-text text-secondary">This prompt is appended to the base system prompt during the conversation.</div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnPersonaSave">Save Persona</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Endpoint Edit Modal ─────────────────────────────────────────────── -->
+  <div class="modal fade" id="endpointModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="endpointModalTitle">New Endpoint</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label text-secondary">Name</label>
+            <input type="text" id="endpointNameInput" class="form-control border-secondary" placeholder="e.g. GSA USAi, OpenAI, Local LMStudio" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-secondary">API Base URL</label>
+            <input type="text" id="endpointUrlInput" class="form-control border-secondary" placeholder="e.g. https://api.openai.com/v1" />
+            <div class="form-text text-secondary">Include the version path (e.g. <code>/v1</code>). Used verbatim — nothing is appended.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-secondary">API Key</label>
+            <div class="input-group">
+              <input type="password" id="endpointKeyInput" class="form-control border-secondary" placeholder="Leave blank to keep current key" autocomplete="new-password" />
+              <button class="btn btn-outline-secondary" type="button" id="btnToggleEndpointKey" title="Show / hide">
+                <i class="bi bi-eye"></i>
+              </button>
+            </div>
+            <div id="endpointKeyStatus" class="form-text text-secondary"></div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-secondary">Default Model</label>
+            <select id="endpointModelSelect" class="form-select border-secondary">
+              <option value="">— Select a default model —</option>
+            </select>
+            <div id="endpointModelStatus" class="form-text text-secondary">Enter a valid URL and key, then the model list loads automatically.</div>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="endpointDefaultInput" />
+            <label class="form-check-label text-secondary" for="endpointDefaultInput">Use as the default endpoint for new conversations</label>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnEndpointSave">Save Endpoint</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Delete Endpoint Confirm Modal ──────────────────────────────────── -->
+  <div class="modal fade" id="deleteEndpointModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete Endpoint</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          Are you sure you want to delete the endpoint <strong id="deleteEndpointNameSpan"></strong>?
+          Conversations using it will fall back to the default endpoint. This cannot be undone.
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="btnDeleteEndpointConfirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Delete Persona Confirm Modal ───────────────────────────────────── -->
+  <div class="modal fade" id="deletePersonaModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete Persona</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          Are you sure you want to delete the persona <strong id="deletePersonaNameSpan"></strong>? This cannot be undone.
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="btnDeletePersonaConfirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Folder Browser Modal ──────────────────────────────────────────── -->
+  <div class="modal fade" id="folderBrowserModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <div class="d-flex align-items-center gap-2 flex-grow-1 min-w-0">
+            <button id="btnFolderBrowserUp" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Go up">
+              <i class="bi bi-arrow-up"></i>
+            </button>
+            <nav aria-label="breadcrumb" class="flex-grow-1 min-w-0 overflow-hidden">
+              <ol id="folderBrowserBreadcrumb"
+                  class="breadcrumb mb-0 flex-nowrap overflow-hidden small"
+                  style="white-space:nowrap"></ol>
+            </nav>
+          </div>
+          <button type="button" class="btn-close ms-2" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body p-0" style="max-height:420px;overflow-y:auto;">
+          <div id="folderBrowserList" class="d-flex flex-column">
+            <!-- Entries injected here -->
+          </div>
+        </div>
+        <!-- Selection bar (shown when one or more items are checked) -->
+        <div id="folderBrowserSelectionBar"
+             class="d-none d-flex align-items-center gap-2 px-3 py-2 border-top border-secondary">
+          <span id="folderBrowserSelectionLabel" class="text-secondary small flex-grow-1"></span>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="FolderBrowser.clearSelection()">
+            Clear
+          </button>
+          <button type="button" class="btn btn-sm btn-primary" id="btnFolderBrowserLinkSelected">
+            <i class="bi bi-link-45deg me-1"></i>Link selected
+          </button>
+        </div>
+        <div class="modal-footer border-secondary justify-content-between">
+          <span class="text-secondary small">Tick items to link several at once, click a file to link it, or link the current folder.</span>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btnFolderBrowserSelect">
+              <i class="bi bi-folder-symlink me-1"></i>Select this folder
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Save-as-files Modal ────────────────────────────────────────────── -->
+  <div class="modal fade" id="saveFilesModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title"><i class="bi bi-files me-2"></i>Save as Files</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label text-secondary">Output folder</label>
+            <input type="text" id="saveFilesOutputDir"
+              class="form-control border-secondary"
+              placeholder="e.g. C:/Users/Me/Documents/output" />
+            <div class="form-text text-secondary">Each section will be saved as a separate .md file in this folder.</div>
+          </div>
+          <label class="form-label text-secondary">Sections detected — edit filenames if needed</label>
+          <div id="saveFilesSectionList" class="d-flex flex-column gap-1"
+               style="max-height:300px;overflow-y:auto;"></div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnSaveFilesConfirm">
+            <i class="bi bi-download me-1"></i>Save all files
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── File Preview Modal ────────────────────────────────────────────────── -->
+  <div class="modal fade" id="filePreviewModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-truncate" id="filePreviewTitle"><i class="bi bi-file-earmark-text me-2"></i>File Preview</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body p-0">
+          <pre id="filePreviewContent" class="app-file-preview m-0 p-3" style="max-height:70vh;overflow:auto;font-size:0.82rem;white-space:pre-wrap;word-break:break-word;"></pre>
+        </div>
+        <div class="modal-footer border-secondary justify-content-between">
+          <span id="filePreviewMeta" class="text-secondary small"></span>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Output Directory Modal ───────────────────────────────────────────── -->
+  <div class="modal fade" id="outputDirModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title"><i class="bi bi-folder2-open me-2"></i>Output Folder</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <!-- Current path + browse button -->
+          <label class="form-label text-secondary">Folder path</label>
+          <div class="d-flex gap-2 mb-1">
+            <input type="text" id="outputDirModalInput"
+              class="form-control border-secondary"
+              placeholder="e.g. C:/Users/Me/Documents/output" />
+            <button class="btn btn-outline-secondary flex-shrink-0" id="btnOutputDirBrowse" title="Browse…">
+              <i class="bi bi-folder me-1"></i>Browse…
+            </button>
+          </div>
+          <div class="form-text text-secondary mb-3">
+            Files written by the AI will be saved here for this conversation.
+            Leave blank to use the app default (<span id="outputDirModalDefault" class="fst-italic">not set</span>).
+          </div>
+
+          <!-- Inline folder browser (hidden until Browse clicked) -->
+          <div id="outputDirBrowserPane" class="d-none">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <button id="btnOutputDirBrowserUp" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Go up">
+                <i class="bi bi-arrow-up"></i>
+              </button>
+              <nav aria-label="breadcrumb" class="flex-grow-1 min-w-0 overflow-hidden">
+                <ol id="outputDirBreadcrumb" class="breadcrumb mb-0 flex-nowrap overflow-hidden small" style="white-space:nowrap"></ol>
+              </nav>
+              <button id="btnOutputDirBrowserClose" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Hide browser">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+            <div id="outputDirBrowserList" class="border border-secondary rounded"
+                 style="max-height:280px;overflow-y:auto;">
+              <!-- entries injected here -->
+            </div>
+            <div class="mt-2 d-flex justify-content-end">
+              <button class="btn btn-sm btn-outline-primary" id="btnOutputDirSelectCurrent">
+                <i class="bi bi-check-lg me-1"></i>Use this folder
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnOutputDirModalSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Help Modal ───────────────────────────────────────────────────────── -->
+  <div class="modal fade" id="helpModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl modal-fullscreen-lg-down">
+      <div class="modal-content app-modal border-secondary" style="height:90vh">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title"><i class="bi bi-question-circle me-2"></i>Help &amp; User Guide</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body p-0">
+          <iframe id="helpFrame" title="Help &amp; User Guide"
+                  style="width:100%;height:100%;border:0;display:block;background:transparent"></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- marked.js (Markdown) — v9 is the last version where parse() is synchronous by default -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+  <!-- highlight.js -->
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/chat.js"></script>
+  <script src="/js/conversations.js"></script>
+  <script src="/js/folders.js"></script>
+  <script src="/js/files.js"></script>
+  <script src="/js/linked_folders.js"></script>
+  <script src="/js/folder_browser.js"></script>
+  <script src="/js/save_files.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Chat App - Help &amp; User Guide</title>
+  <link rel="icon" type="image/x-icon" href="/ai.ico" />
+
+  <!-- Bootstrap 5 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+
+  <!-- Shared app stylesheet (defines the theme tokens used across the site) -->
+  <link rel="stylesheet" href="/css/style.css" />
+
+    <!-- Apply saved theme immediately to avoid a flash of the wrong theme.
+       When embedded in the in-app Help modal (inside an <iframe>), the page
+       hides its own navbar so it blends into the modal. -->
+  <script>
+    (function () {
+      const t = localStorage.getItem("theme") || "dark";
+      document.documentElement.setAttribute("data-bs-theme", t);
+      // Detect if we're running inside the app's Help modal iframe
+      if (window.self !== window.top) {
+        document.documentElement.classList.add("embedded");
+      }
+    })();
+  </script>
+
+  <style>
+        /* ── Help-page layout, built on the shared theme tokens (--app-*) ─────── */
+    body { line-height: 1.65; }
+
+    .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+
+    /* When embedded in the in-app Help modal (inside an iframe), hide the
+       standalone navbar, blend into the modal background, and tighten spacing. */
+    html.embedded body { background: transparent; }
+    html.embedded .app-navbar { display: none; }
+    html.embedded .wrap { padding: 24px 28px 48px; }
+    html.embedded footer { margin-top: 48px; }
+
+    header.hero {
+      border-bottom: 1px solid var(--app-border);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+    header.hero h1 { font-size: 2rem; margin: 0 0 6px; }
+    header.hero p { color: var(--app-text-muted); margin: 0; }
+
+    h2 {
+      margin-top: 48px;
+      padding-bottom: 8px;
+      font-size: 1.5rem;
+      border-bottom: 1px solid var(--app-border);
+    }
+    h3 { margin-top: 32px; font-size: 1.15rem; color: #6ea8fe; }
+    [data-bs-theme="light"] h3 { color: #0d6efd; }
+
+    code {
+      background: rgba(127,127,127,0.18);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      font-family: Consolas, monospace;
+    }
+    pre {
+      background: var(--app-pre-bg);
+      border: 1px solid var(--app-code-border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+    }
+    pre code { background: none; padding: 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      font-size: 0.95rem;
+    }
+    th, td {
+      border: 1px solid var(--app-border);
+      padding: 9px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: rgba(127,127,127,0.12); }
+
+    ul, ol { padding-left: 1.4em; }
+    li { margin: 6px 0; }
+
+    .toc {
+      background: var(--app-surface);
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      padding: 18px 24px;
+      margin-bottom: 32px;
+    }
+    .toc h2 { margin: 0 0 10px; border: none; padding: 0; font-size: 1.1rem; }
+    .toc ol { margin: 0; }
+    .toc a { text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+
+    .callout {
+      border-left: 4px solid #0d6efd;
+      background: rgba(13,110,253,0.08);
+      padding: 12px 18px;
+      border-radius: 0 8px 8px 0;
+      margin: 20px 0;
+    }
+    .callout.warn { border-left-color: #ffc107; background: rgba(255,193,7,0.08); }
+    .callout.danger { border-left-color: #dc3545; background: rgba(220,53,69,0.10); }
+    .callout p { margin: 6px 0; }
+
+    .step {
+      background: var(--app-surface);
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin: 14px 0;
+    }
+    .step .num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #0d6efd;
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.85rem;
+      margin-right: 8px;
+    }
+
+    .pill {
+      display: inline-block;
+      background: rgba(127,127,127,0.18);
+      border-radius: 20px;
+      padding: 1px 10px;
+      font-size: 0.82rem;
+      color: var(--app-text-muted);
+    }
+
+    footer {
+      margin-top: 64px;
+      padding-top: 20px;
+      border-top: 1px solid var(--app-border);
+      color: var(--app-text-muted);
+      font-size: 0.9rem;
+      text-align: center;
+    }
+
+    kbd {
+      background: var(--app-surface-2);
+      border: 1px solid var(--app-border);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      padding: 1px 7px;
+      font-size: 0.85em;
+      font-family: Consolas, monospace;
+      color: var(--app-text);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top navbar, matching the main app chrome -->
+  <nav class="navbar app-navbar border-bottom border-secondary px-3 py-2">
+    <a href="/" class="navbar-brand mb-0 h5 d-flex align-items-center gap-2 text-decoration-none">
+      <i class="bi bi-robot text-primary"></i> My Chat App
+    </a>
+    <div class="d-flex align-items-center gap-2">
+      <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to app">
+        <i class="bi bi-arrow-left me-1"></i>Back to app
+      </a>
+      <button class="btn btn-sm btn-outline-secondary" id="btnThemeToggle" title="Toggle dark/light theme">
+        <i class="bi bi-moon-stars-fill"></i>
+      </button>
+    </div>
+  </nav>
+
+  <div class="wrap">
+
+    <header class="hero">
+      <h1>My Chat App &mdash; Help &amp; User Guide</h1>
+      <p>Everything you need to set up the application and get the most out of it.</p>
+    </header>
+
+    <nav class="toc">
+      <h2>Contents</h2>
+      <ol>
+                <li><a href="#setup">Getting Started &amp; Setup</a></li>
+        <li><a href="#overview">A Quick Tour of the Screen</a></li>
+        <li><a href="#endpoints">API Endpoints</a></li>
+        <li><a href="#conversations">Working with Conversations</a></li>
+        <li><a href="#messaging">Sending Messages</a></li>
+        <li><a href="#personas">Personas</a></li>
+        <li><a href="#models">Choosing a Model</a></li>
+        <li><a href="#files">Attaching Files &amp; Folders</a></li>
+        <li><a href="#output">Saving the AI's Work to Disk</a></li>
+        <li><a href="#tools">What the Assistant Can Do (Tools)</a></li>
+        <li><a href="#settings">Settings Explained</a></li>
+        <li><a href="#tips">Tips &amp; Troubleshooting</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="setup">1. Getting Started &amp; Setup</h2>
+    <p>Before you can chat, the application needs to know <strong>which AI service to
+    connect to</strong> and <strong>where to save any files</strong> it creates. This is a
+    one-time setup. Follow the steps below in order.</p>
+
+    <div class="callout">
+      <p><strong>Where to find these options:</strong> click the
+      <span class="pill">&#9881; Settings</span> gear icon in the top-right corner of the
+      application. All setup options live in this window.</p>
+    </div>
+
+        <h3>Required settings</h3>
+    <p>The application cannot answer messages until you have added at least one
+    <strong>API Endpoint</strong> (see the <a href="#endpoints">API Endpoints</a> section for
+    full details).</p>
+
+        <div class="step">
+      <p><span class="num">1</span><strong>Add an API Endpoint</strong></p>
+      <p>In <em>Settings</em>, click <em>New Endpoint</em> and provide a name, the API base URL
+      of your provider (for example <code>https://api.openai.com/v1</code>), and the API key
+      issued by that provider. Tick <em>Use as the default endpoint</em> so new conversations
+      use it automatically. You can add as many endpoints as you like and switch between them
+      per conversation.</p>
+    </div>
+
+    <div class="step">
+      <p><span class="num">2</span><strong>Default Model (per endpoint)</strong></p>
+      <p>Every endpoint has its <strong>own default model</strong>. Once you enter a valid URL and
+      key in the endpoint window, the <em>Default Model</em> list fills automatically with the
+      models that endpoint offers &mdash; pick one. This model is used whenever you start a new
+      conversation on that endpoint.</p>
+      <p>If you mark an endpoint as the <em>default endpoint</em>, it <strong>must</strong> have a
+      default model chosen. The app will not let you save a default endpoint without one, and if
+      you switch the default endpoint to one that has no default model yet, you will be prompted to
+      pick one first.</p>
+    </div>
+
+        <div class="step">
+      <p><span class="num">4</span><strong>Default Output Folder</strong>
+      <span class="pill">recommended</span></p>
+      <p>When you ask the assistant to save or create a file, it writes it into this folder.
+      Enter a full folder path, for example <code>C:/Users/Me/Documents/output</code>.
+      If left blank, file-saving features may not work as expected, so setting it is strongly
+      recommended.</p>
+    </div>
+
+    <div class="step">
+      <p><span class="num">5</span><strong>Folder Browser Starting Path</strong>
+      <span class="pill">optional</span></p>
+      <p>When you browse your computer for a folder, the browser opens at this location by
+      default. Setting it to a folder you use often saves clicking. If left blank, browsing
+      starts at your home directory.</p>
+    </div>
+
+    <p>When you have entered your details, click <strong>Save</strong>. The model list refreshes
+    automatically, and you are ready to start chatting.</p>
+
+        <div class="callout warn">
+      <p><strong>Setup at a glance:</strong> at a minimum you need one <em>API Endpoint</em>
+      (name + URL + key) marked as default, and that endpoint needs a <em>default model</em>.
+      Adding a <em>Default Output Folder</em> makes day-to-day use much smoother.</p>
+    </div>
+
+    <h2 id="overview">2. A Quick Tour of the Screen</h2>
+    <p>The application is arranged into a few simple areas:</p>
+    <table>
+      <thead><tr><th>Area</th><th>What it is for</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Top bar</strong></td>
+          <td>Holds the <em>Model</em> selector, a theme (light/dark) toggle, the
+          <em>Help</em> button, and the <em>Settings</em> gear.</td></tr>
+        <tr><td><strong>Sidebar (left)</strong></td>
+          <td>Lists all your conversations. Includes the <em>New Chat</em> button and a
+          search box to find past conversations by their contents.</td></tr>
+                                <tr><td><strong>Chat header</strong></td>
+          <td>Shows the current conversation title with buttons to rename, export, delete, and
+          choose an <em>Endpoint</em> and a <em>Persona</em>. A <em>Use Tools</em> toggle turns
+          the assistant's file and code abilities on or off for that conversation. A small badge
+          estimates how much context the conversation is using.</td></tr>
+        <tr><td><strong>Message area (centre)</strong></td>
+          <td>Where your messages and the assistant's replies appear.</td></tr>
+        <tr><td><strong>Input area (bottom)</strong></td>
+          <td>Where you type. A toolbar underneath provides buttons for attaching files,
+          linking folders, importing a document, and setting the output folder.</td></tr>
+      </tbody>
+    </table>
+
+        <h2 id="endpoints">3. API Endpoints</h2>
+    <p>An <strong>API Endpoint</strong> is a single AI provider you can connect to. Each endpoint
+    stores its own <em>name</em>, <em>API base URL</em>, <em>API key</em>, and <em>default
+    model</em>. You can add several endpoints (for example a hosted provider and a local server)
+    and pick which one each conversation uses.</p>
+
+    <h3>Adding and editing endpoints</h3>
+    <p>Open <em>Settings</em> and look at the <em>API Endpoints</em> section at the top:</p>
+    <ul>
+      <li><strong>New Endpoint:</strong> click it, then fill in:
+        <ul>
+          <li><strong>Name</strong> &mdash; a friendly label, e.g. "OpenAI" or "Local LMStudio".</li>
+          <li><strong>API Base URL</strong> &mdash; the full base URL <em>including</em> the
+          version path, e.g. <code>https://api.openai.com/v1</code>. It is used verbatim; nothing
+          is appended.</li>
+          <li><strong>API Key</strong> &mdash; the credential from your provider. Local servers
+          (LMStudio, Ollama) usually don't need one, so you can leave it blank.</li>
+          <li><strong>Default Model</strong> &mdash; once a valid URL and key are entered, the
+          model list loads automatically; choose the model this endpoint should use by default for
+          new conversations. (For a brand-new endpoint the list can only load after the endpoint is
+          saved &mdash; save it, then reopen it to pick the default model.)</li>
+          <li><strong>Use as the default endpoint</strong> &mdash; tick this to make new
+          conversations use it automatically.</li>
+        </ul>
+      </li>
+      <li><strong>Edit:</strong> click the pencil icon on any endpoint. When editing, leave the
+      key field blank to keep the existing key, or type a new value to replace it.</li>
+      <li><strong>Delete:</strong> click the trash icon. Any conversation that used it falls back
+      to the default endpoint.</li>
+    </ul>
+    <p>In the endpoint list, each endpoint shows its default model. An endpoint that has no default
+    model yet is flagged with a <span class="pill">No default model</span> badge so it's easy to
+    spot.</p>
+
+    <div class="callout warn">
+      <p><strong>The default endpoint must have a default model.</strong> You cannot save an
+      endpoint marked as default without choosing a default model for it. Likewise, if you change
+      which endpoint is the default and the new one has no default model identified, the app will
+      require you to pick one first.</p>
+    </div>
+
+    <div class="callout">
+      <p>Only one endpoint can be the default at a time. Marking a new one as default
+      automatically clears the flag on the others. Endpoints are stored in the app's local
+      database, and their keys are never sent back to the browser &mdash; the list only shows
+      whether a key is set.</p>
+    </div>
+
+    <h3>Choosing an endpoint per conversation</h3>
+    <p>The chat header has an <em>Endpoint</em> dropdown. Leave it on
+    <em>— Default —</em> to use whichever endpoint is currently the default, or pick a specific
+    endpoint to pin this conversation to it. Changing the endpoint reloads the model list for
+    that provider <strong>and switches the conversation to that endpoint's default model</strong>,
+    so the <em>Model</em> dropdown always reflects a sensible choice for the selected endpoint.
+    This choice is saved with the conversation.</p>
+
+    <div class="callout warn">
+      <p><strong>Example URLs:</strong> OpenAI <code>https://api.openai.com/v1</code>,
+      Gemini <code>https://generativelanguage.googleapis.com/v1beta/openai</code>,
+      LMStudio <code>http://localhost:1234/v1</code>,
+      Ollama <code>http://localhost:11434/v1</code>.</p>
+    </div>
+
+    <h2 id="conversations">4. Working with Conversations</h2>
+    <ul>
+      <li><strong>Start a new conversation:</strong> click <em>New Chat</em> in the sidebar.
+      It uses your default model (and the persona currently selected, if any).</li>
+      <li><strong>Switch conversations:</strong> click any conversation in the sidebar to open it.</li>
+      <li><strong>Automatic titles:</strong> a conversation is automatically named from your
+      first message. You can rename it at any time with the pencil icon in the chat header.</li>
+      <li><strong>Search:</strong> type in the sidebar search box to find conversations that
+      contain a word or phrase; a short snippet of the match is shown.</li>
+      <li><strong>Export:</strong> the download icon in the chat header saves the conversation
+      as a tidy Markdown document (to your output folder, or as a browser download if no folder
+      is set).</li>
+      <li><strong>Delete:</strong> the trash icon removes a conversation permanently.</li>
+    </ul>
+
+    <h2 id="messaging">5. Sending Messages</h2>
+    <ul>
+      <li>Type in the box at the bottom and press <kbd>Enter</kbd> to send.</li>
+      <li>Use <kbd>Shift</kbd> + <kbd>Enter</kbd> to add a new line without sending.</li>
+      <li>Replies appear as they are generated. To interrupt a long reply, click the red
+      <strong>Stop</strong> button that appears while the assistant is responding.</li>
+      <li><strong>Edit a message:</strong> hover over one of your own messages and click the
+      pencil icon. Editing re-sends from that point and replaces everything that came after.</li>
+      <li><strong>Regenerate:</strong> hover over an assistant reply and click
+      <em>Regenerate</em> to get a fresh answer to the same question.</li>
+      <li><strong>Copy code:</strong> hover over any code block in a reply to reveal a copy button.</li>
+    </ul>
+
+    <h2 id="personas">6. Personas</h2>
+    <p>A <strong>persona</strong> tells the assistant to adopt a particular role or style &mdash;
+    for example a Business Analyst, Python Developer, or Technical Writer. The application comes
+    with several ready-made personas, and you can create your own.</p>
+    <ul>
+      <li><strong>Apply a persona:</strong> use the <em>Persona</em> dropdown in the chat header.
+      The choice applies to that conversation.</li>
+      <li><strong>Create or edit:</strong> open <em>Settings</em>, then use the
+      <em>New Persona</em> button (or the pencil icon beside an existing one). Give it a name
+      and describe how the assistant should behave.</li>
+      <li>A persona's instructions are added on top of the assistant's normal behaviour for the
+      selected conversation.</li>
+    </ul>
+
+        <h2 id="models">7. Choosing a Model</h2>
+        <p>The <em>Model</em> dropdown in the top bar controls which AI model answers the
+        <strong>current</strong> conversation. Changing it affects only that conversation. New
+        conversations start with the <strong>selected endpoint's default model</strong> (falling back
+        to the app-wide fallback model in Settings if the endpoint has none). The available models
+        come from the conversation's selected <em>Endpoint</em>, and switching endpoints adopts that
+        endpoint's default model automatically.</p>
+    <div class="callout">
+      <p>Different models have different strengths, speeds, and context limits. If you are
+      unsure, start with your default and switch only if you need a specific capability.</p>
+    </div>
+
+    <h2 id="files">8. Attaching Files &amp; Folders</h2>
+    <p>You can give the assistant documents to read and reference. The toolbar beneath the
+    message box offers four ways to do this:</p>
+    <table>
+      <thead><tr><th>Button</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Attach files</strong> (paperclip)</td>
+          <td>Upload one or more individual files. Their text is extracted and made available
+          to the assistant for the conversation.</td></tr>
+        <tr><td><strong>Upload folder</strong> (folder with plus)</td>
+          <td>Upload a whole folder. Supported files are copied to the application and their
+          contents become available.</td></tr>
+                <tr><td><strong>Link folder or file</strong> (folder with link)</td>
+                  <td>Point to a folder <em>or an individual file</em> on your computer. The content is
+                  read live from disk each time you chat &mdash; nothing is copied, and updates on disk are
+                  picked up automatically. Open the browser, then click a file to link it, or use the
+                  button to link the folder you are currently viewing. To link several items at once,
+                  tick their checkboxes and choose <em>Link selected</em>.</td></tr>
+        <tr><td><strong>Import Markdown</strong> (markdown icon)</td>
+          <td>Bring in a Markdown or text file specifically as background context.</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>Attached items appear as small chips above the message box. Click a chip's name to
+      preview its extracted text, or the &times; to remove it.</li>
+      <li><strong>Supported types</strong> include text and Markdown, common code files, PDFs,
+      Word documents, Excel spreadsheets, CSVs, JSON/YAML, and more. Unsupported files are
+      skipped automatically.</li>
+      <li><strong>Large files:</strong> if a file (or linked folder) contains a very large amount
+      of text, you will be warned, because it can slow responses or reduce answer quality. Very
+      large files may be shortened so only the first portion is used.</li>
+      <li>The <strong>context badge</strong> in the chat header shows the estimated percentage
+      of the configured context window in use, colour-coded from grey (comfortable) to red
+      (very large). Set the model's context limit under Settings.</li>
+    </ul>
+    <div class="callout">
+      <p><strong>Uploaded vs. linked:</strong> <em>Uploaded</em> files are stored with the
+      conversation. <em>Linked</em> folders stay where they are and are read fresh each time &mdash;
+      ideal for a working project folder you keep changing.</p>
+    </div>
+
+    <h2 id="output">9. Saving the AI's Work to Disk</h2>
+    <p>When you ask the assistant to create or save a file, it writes it to your
+    <strong>output folder</strong>. There are two levels of control:</p>
+    <ul>
+      <li><strong>Default Output Folder</strong> (in Settings) &mdash; applies everywhere unless
+      overridden.</li>
+      <li><strong>Per-conversation output folder</strong> &mdash; click the folder icon in the
+      toolbar to set a different destination for just the current conversation. You can type a
+      path or use the built-in <em>Browse</em> button to pick a folder. A per-conversation
+      setting always takes priority over the default.</li>
+    </ul>
+    <p><strong>Save as files:</strong> when a reply is organised into several sections (each with
+    its own heading), a <em>Save as files</em> button appears at the bottom of that reply.
+    It splits the reply into separate files &mdash; one per section &mdash; and saves them all to
+    your output folder. You can adjust each filename before saving.</p>
+
+    <h2 id="tools">10. What the Assistant Can Do (Tools)</h2>
+    <p>Beyond answering in the chat, the assistant can perform a few practical actions when it
+    genuinely helps with your request:</p>
+    <table>
+      <thead><tr><th>Capability</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Write a file</strong></td>
+          <td>Save content to your output folder &mdash; used when you ask for something to be
+          created or saved.</td></tr>
+        <tr><td><strong>Read a file</strong></td>
+          <td>Open and review a file already on disk so it can be analysed or updated.</td></tr>
+        <tr><td><strong>List a folder</strong></td>
+          <td>See what files exist in a folder before reading or writing.</td></tr>
+        <tr><td><strong>Run a calculation</strong></td>
+          <td>Execute a short piece of code to produce a concrete result &mdash; useful for data
+          analysis, maths, or quick transformations.</td></tr>
+      </tbody>
+    </table>
+        <p>When the assistant uses one of these, you will see a small notification in the chat
+    confirming what happened (for example, that a file was saved and where).</p>
+
+    <h3>The "Use Tools" toggle</h3>
+    <p>Each conversation has a <strong>Use Tools</strong> toggle in the chat header (the
+    <i class="bi bi-tools"></i> wrench button, labelled <em>Use Tools</em>). It controls whether
+    the abilities above are offered to the model for that conversation:</p>
+    <ul>
+      <li><strong>On</strong> (highlighted button) &mdash; the assistant may read/write files,
+      list folders, and run calculations when it helps. This is the default for new conversations.</li>
+      <li><strong>Off</strong> (plain button) &mdash; the assistant answers in the chat only and
+      is not offered any tools.</li>
+    </ul>
+    <p>The setting is remembered <em>per conversation</em>, so you can keep tools on in one chat
+    and off in another. Click the button to switch; the change takes effect on your next message.</p>
+    <div class="callout warn">
+      <p><strong>When to turn tools off:</strong> some AI services or locally-run models don't
+      support the "function calling" feature these tools rely on and may return an error if it is
+      requested. If a conversation fails as soon as you send a message, try turning
+      <em>Use Tools</em> off for that conversation.</p>
+    </div>
+
+
+        <h2 id="settings">11. Settings Explained</h2>
+    <p>All application-wide settings live in the <em>Settings</em> window (the gear icon).
+    Here is what each one does and how it is applied:</p>
+    <table>
+      <thead><tr><th>Setting</th><th>Purpose</th><th>How it is applied</th></tr></thead>
+      <tbody>
+                <tr><td><strong>API Endpoints</strong></td>
+          <td>The AI providers you can connect to (name, URL, key, default model).</td>
+          <td>Managed at the top of Settings. The one marked default is used by new
+          conversations; each conversation can override it from the header. A default endpoint
+          must have a default model chosen.</td></tr>
+        <tr><td><strong>Endpoint Default Model</strong></td>
+          <td>The model each endpoint uses by default.</td>
+          <td>Set inside each endpoint's window. Applied to new conversations that use that
+          endpoint, and adopted automatically when you switch a conversation to that endpoint.</td></tr>
+        <tr><td><strong>Fallback Default Model</strong></td>
+          <td>A safety-net model used only when the active endpoint has no default model.</td>
+          <td>Applied when you click <em>New Chat</em> and the endpoint has no default model of its
+          own. Existing conversations keep their own model.</td></tr>
+        <tr><td><strong>Folder Browser Starting Path</strong></td>
+          <td>Where the folder browser opens.</td>
+          <td>Used whenever you browse for a folder. Optional.</td></tr>
+        <tr><td><strong>Default Output Folder</strong></td>
+          <td>Where AI-written files are saved.</td>
+          <td>Used for all conversations unless a conversation sets its own output folder.</td></tr>
+        <tr><td><strong>Personas</strong></td>
+          <td>Reusable role/style profiles.</td>
+          <td>Created and edited here; applied per conversation via the header dropdown.</td></tr>
+      </tbody>
+    </table>
+
+        <div class="callout danger">
+      <p><strong>Purge all conversations.</strong> At the bottom of Settings is a
+      <em>Purge</em> option that permanently deletes every conversation, message, and uploaded
+      file. Your settings and personas are kept. This cannot be undone &mdash; use it only when
+      you are certain.</p>
+    </div>
+
+    <div class="callout danger">
+      <p><strong>Reset Database.</strong> Below the Purge section is a <em>Reset Database</em>
+      checkbox. Tick it and click <em>Save</em> to clear the core configuration values: the
+      Fallback Default Model, each endpoint's own default model, the Folder Browser Starting Path,
+      and the Default Output Folder. Your conversations and personas are kept. This cannot be
+      undone. After a reset, the app will prompt you to re-enter these values the next time it
+      starts if they are still empty.</p>
+    </div>
+
+        <h3>How settings priority works</h3>
+    <ul>
+            <li><strong>Endpoint:</strong> a per-conversation endpoint wins; otherwise the default
+      endpoint is used.</li>
+      <li><strong>Model:</strong> the model chosen in the top bar for the current conversation
+      wins; otherwise the selected endpoint's default model is used; if the endpoint has none, the
+      app-wide Fallback Default Model is used.</li>
+      <li><strong>Output folder:</strong> a per-conversation folder wins; otherwise the Default
+      Output Folder is used.</li>
+            <li><strong>Reference material:</strong> if a conversation has both linked folders and
+      uploaded files, linked folders take priority, and any uploaded file with the same name is
+      not duplicated.</li>
+      <li><strong>Tools:</strong> the <em>Use Tools</em> toggle is set per conversation and
+      defaults to on for new conversations.</li>
+    </ul>
+
+        <h2 id="tips">12. Tips &amp; Troubleshooting</h2>
+    <table>
+      <thead><tr><th>Situation</th><th>What to check</th></tr></thead>
+      <tbody>
+        <tr><td>The model list is empty or won't load</td>
+          <td>Confirm the selected <em>Endpoint</em>'s URL and key are correct in Settings, then
+          reopen the conversation (or reselect the endpoint) to refresh the list.</td></tr>
+        <tr><td>Files aren't being saved</td>
+          <td>Make sure a <em>Default Output Folder</em> (or a per-conversation folder) is set,
+          and that the path exists and is spelled correctly.</td></tr>
+        <tr><td>Replies are slow or lower quality</td>
+          <td>Check the token badge. Very large attachments or linked folders can overload the
+          context &mdash; remove what you don't need.</td></tr>
+        <tr><td>An attached file was skipped</td>
+          <td>Its type may not be supported. Convert it to a supported format such as PDF, Word,
+          text, or Markdown.</td></tr>
+        <tr><td>Prefer a light background</td>
+          <td>Use the sun/moon toggle in the top bar to switch between light and dark themes.
+          Your choice is remembered.</td></tr>
+                <tr><td>Want to reuse a document across chats</td>
+          <td>Link the folder rather than uploading &mdash; linked folders are read fresh each
+          time and reflect any changes on disk.</td></tr>
+        <tr><td>A conversation errors as soon as you send a message</td>
+          <td>The model may not support tool/function calling. Turn the <em>Use Tools</em> toggle
+          in the chat header off for that conversation and try again.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <p><strong>A good starting workflow:</strong> set up your API details and output folder,
+      choose a persona that fits the task, attach or link any reference material, then ask your
+      question. Use <em>Save as files</em> or <em>Export</em> to keep the results.</p>
+    </div>
+
+    <footer>
+      My Chat App &mdash; User Guide. Reach this page any time via the
+      <span class="pill">?</span> Help button in the top bar.
+    </footer>
+
+    </div>
+
+  <!-- Standalone theme toggle (this page doesn't load app.js) -->
+  <script>
+    (function () {
+      const btn = document.getElementById("btnThemeToggle");
+
+      function applyTheme(theme) {
+        const isDark = theme === "dark";
+        document.documentElement.setAttribute("data-bs-theme", theme);
+        localStorage.setItem("theme", theme);
+        btn.innerHTML = isDark
+          ? '<i class="bi bi-moon-stars-fill"></i>'
+          : '<i class="bi bi-sun-fill"></i>';
+      }
+
+      // Initialise icon to match the theme applied in <head>
+      applyTheme(localStorage.getItem("theme") || "dark");
+
+      btn.addEventListener("click", function () {
+        const current =
+          document.documentElement.getAttribute("data-bs-theme") || "dark";
+        applyTheme(current === "dark" ? "light" : "dark");
+      });
+    })();
+  </script>
+</body>
+</html>

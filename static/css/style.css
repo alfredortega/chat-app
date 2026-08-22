@@ -1,0 +1,708 @@
+/* ── Theme tokens ────────────────────────────────────────────────────────── */
+/*
+ * All colours are declared as CSS custom properties on [data-bs-theme].
+ * Bootstrap 5 already sets --bs-body-bg / --bs-body-color for us, but we
+ * need tokens for the app's own surfaces.
+ */
+
+[data-bs-theme="dark"] {
+  --app-bg:           #212529;   /* body / main bg  */
+  --app-surface:      #2a2d31;   /* cards, bubbles   */
+  --app-surface-2:    #1e2124;   /* deeper surface   */
+  --app-navbar-bg:    #1a1d20;
+  --app-sidebar-bg:   #1a1d20;
+  --app-input-bg:     #1a1d20;
+  --app-modal-bg:     #212529;
+  --app-border:       rgba(255,255,255,0.15);
+  --app-text:         #e8e8e8;
+  --app-text-muted:   #adb5bd;
+  --app-code-bg:      #0d1117;
+  --app-code-border:  transparent;
+  --app-pre-bg:       #0d1117;
+  --app-scrollbar:    #444;
+  --app-scrollbar-h:  #666;
+  --app-input-color:  #e8e8e8;
+}
+
+[data-bs-theme="light"] {
+  --app-bg:           #f8f9fa;
+  --app-surface:      #ffffff;
+  --app-surface-2:    #f0f2f5;
+  --app-navbar-bg:    #ffffff;
+  --app-sidebar-bg:   #f0f2f5;
+  --app-input-bg:     #ffffff;
+  --app-modal-bg:     #ffffff;
+  --app-border:       rgba(0,0,0,0.15);
+  --app-text:         #1a1a1a;
+  --app-text-muted:   #6c757d;
+  --app-code-bg:      #f6f8fa;
+  --app-code-border:  #d0d7de;
+  --app-pre-bg:       #f6f8fa;
+  --app-scrollbar:    #bbb;
+  --app-scrollbar-h:  #999;
+  --app-input-color:  #1a1a1a;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+
+body {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+#sidebar {
+  width: 260px;
+  min-width: 260px;
+}
+
+/* ── Themed structural surfaces ──────────────────────────────────────────── */
+
+.app-navbar {
+  background-color: var(--app-navbar-bg);
+  color: var(--app-text);
+}
+
+.app-navbar .navbar-brand,
+.app-navbar label {
+  color: var(--app-text-muted);
+}
+
+#sidebar {
+  background-color: var(--app-sidebar-bg);
+}
+
+#chatHeader {
+  background-color: var(--app-navbar-bg);
+}
+
+.app-input-area {
+  background-color: var(--app-input-bg);
+}
+
+/* Modal surfaces */
+.app-modal {
+  background-color: var(--app-modal-bg);
+  color: var(--app-text);
+}
+
+/* File preview pre */
+.app-file-preview {
+  background-color: var(--app-code-bg);
+  color: var(--app-text);
+}
+
+/* Messages area */
+#messagesArea {
+  background-color: var(--app-bg);
+}
+
+/* Empty state */
+#emptyState {
+  background-color: var(--app-bg);
+}
+
+/* ── Form controls — theme-aware ────────────────────────────────────────── */
+
+.form-control,
+.form-select {
+  background-color: var(--app-surface);
+  color: var(--app-input-color);
+  border-color: var(--app-border);
+}
+
+.form-control:focus,
+.form-select:focus {
+  background-color: var(--app-surface);
+  color: var(--app-input-color);
+  border-color: #6ea8fe;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+}
+
+.form-control::placeholder {
+  color: var(--app-text-muted);
+  opacity: 1;
+}
+
+.input-group-text {
+  background-color: var(--app-surface);
+  color: var(--app-text-muted);
+  border-color: var(--app-border);
+}
+
+/* ── Conversation list items ─────────────────────────────────────────────── */
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--app-text-muted);
+  transition: background 0.15s;
+  position: relative;
+  margin: 2px 6px;
+}
+
+.conv-item:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--app-text);
+}
+
+.conv-item.active {
+  background: rgba(13, 110, 253, 0.2);
+  color: #6ea8fe;
+}
+
+[data-bs-theme="light"] .conv-item.active {
+  color: #0d6efd;
+}
+
+.conv-item .conv-title {
+  flex: 1;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-item .conv-actions {
+  display: none;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.conv-item:hover .conv-actions,
+.conv-item.active .conv-actions {
+  display: flex;
+}
+
+.conv-item .conv-actions button {
+  background: transparent;
+  border: none;
+  color: var(--app-text-muted);
+  padding: 0 3px;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.conv-item .conv-actions button:hover {
+  color: var(--app-text);
+  background: rgba(127, 127, 127, 0.15);
+}
+
+/* ── Messages ─────────────────────────────────────────────────────────────── */
+
+.message-bubble {
+  max-width: 85%;
+  border-radius: 12px;
+  padding: 10px 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.message-user {
+  align-self: flex-end;
+  background: #0d6efd;
+  color: #fff;
+}
+
+.message-assistant {
+  align-self: flex-start;
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.message-tool {
+  align-self: flex-start;
+  background: transparent;
+  padding: 4px 0;
+}
+
+.tool-notification {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #aaa;
+}
+
+.tool-notification.success {
+  border-color: rgba(25, 135, 84, 0.5);
+  color: #6ee9b1;
+  background: rgba(25, 135, 84, 0.1);
+}
+
+.tool-notification.error {
+  border-color: rgba(220, 53, 69, 0.5);
+  color: #f88;
+  background: rgba(220, 53, 69, 0.1);
+}
+
+/* ── Markdown rendering inside bubbles ───────────────────────────────────── */
+
+.message-bubble p { margin-bottom: 0.5em; }
+.message-bubble p:last-child { margin-bottom: 0; }
+.message-bubble pre {
+  background: var(--app-pre-bg);
+  border: 1px solid var(--app-code-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.message-bubble code:not(pre code) {
+  background: rgba(127,127,127,0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+.message-bubble pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.85em;
+}
+.message-bubble ul, .message-bubble ol {
+  padding-left: 1.3em;
+  margin-bottom: 0.5em;
+}
+.message-bubble blockquote {
+  border-left: 3px solid var(--app-text-muted);
+  padding-left: 10px;
+  color: var(--app-text-muted);
+  margin: 6px 0;
+}
+.message-bubble table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88em;
+  margin: 8px 0;
+}
+.message-bubble th, .message-bubble td {
+  border: 1px solid var(--app-border);
+  padding: 5px 10px;
+}
+.message-bubble th {
+  background: rgba(127,127,127,0.08);
+}
+
+/* ── Streaming cursor ────────────────────────────────────────────────────── */
+
+.streaming-cursor::after {
+  content: "▌";
+  display: inline-block;
+  animation: blink 0.8s step-start infinite;
+  margin-left: 1px;
+  color: #6ea8fe;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--app-scrollbar); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--app-scrollbar-h); }
+
+/* ── Misc ────────────────────────────────────────────────────────────────── */
+
+#messageInput {
+  resize: none;
+  font-size: 0.95rem;
+}
+
+#chatTitleDisplay {
+  font-size: 1rem;
+}
+
+/* ── Persona list rows in settings ───────────────────────────────────────── */
+
+.persona-row {
+  background: rgba(127,127,127,0.04);
+  transition: background 0.15s;
+}
+
+.persona-row:hover {
+  background: rgba(127,127,127,0.1);
+}
+
+/* ── Endpoint list rows in settings ──────────────────────────────────────── */
+
+.endpoint-row {
+  background: rgba(127,127,127,0.04);
+  transition: background 0.15s;
+}
+
+.endpoint-row:hover {
+  background: rgba(127,127,127,0.1);
+}
+
+.endpoint-row .min-w-0 {
+  min-width: 0;
+}
+
+/* ── Attached file chips ─────────────────────────────────────────────────── */
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--app-border);
+  background: rgba(127,127,127,0.08);
+  font-size: 0.8rem;
+  color: var(--app-text);
+  max-width: 220px;
+}
+
+.file-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
+}
+
+.file-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--app-text-muted);
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-chip-remove:hover {
+  color: #f88;
+  background: rgba(220, 53, 69, 0.2);
+}
+
+/* ── Output dir popover (no longer used, kept for reference) ─────────────── */
+
+.output-dir-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 1050;
+  background: var(--app-modal-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 340px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+/* ── Output dir modal folder browser ─────────────────────────────────────── */
+
+#outputDirBrowserList .browser-entry {
+  border-bottom: 1px solid var(--app-border);
+}
+
+#outputDirBrowserList .browser-entry:last-child {
+  border-bottom: none;
+}
+
+.output-dir-label {
+  font-size: 0.72rem;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ── Linked folder chips ─────────────────────────────────────────────────── */
+
+.linked-folder-chip {
+  border-color: rgba(255, 193, 7, 0.35);
+  background: rgba(255, 193, 7, 0.07);
+}
+
+/* ── Folder browser entries ──────────────────────────────────────────────── */
+
+.browser-entry {
+  display: flex;
+  align-items: center;
+  padding: 7px 14px;
+  border: none;
+  border-bottom: 1px solid var(--app-border);
+  background: transparent;
+  color: var(--app-text);
+  font-size: 0.875rem;
+  transition: background 0.1s;
+}
+
+.browser-entry:last-child {
+  border-bottom: none;
+}
+
+.browser-entry-dir:hover {
+  background: rgba(127,127,127,0.1);
+  cursor: pointer;
+}
+
+.browser-entry-file {
+  color: var(--app-text);
+}
+
+.browser-entry-file:not(.opacity-50):hover {
+  background: rgba(127,127,127,0.1);
+}
+
+.browser-entry-file.opacity-50 {
+  color: var(--app-text-muted);
+}
+
+/* The clickable body button inside a browser row */
+.browser-entry-body {
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.browser-entry-body:disabled {
+  cursor: default;
+}
+
+.browser-entry-check {
+  cursor: pointer;
+}
+
+.browser-entry-check:disabled {
+  cursor: default;
+}
+
+.save-as-files-btn {
+  font-size: 0.78rem;
+  padding: 2px 10px;
+}
+
+/* ── Copy code button ────────────────────────────────────────────────────── */
+
+.copy-code-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: rgba(127,127,127,0.15);
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  line-height: 1.4;
+}
+
+.message-bubble pre:hover .copy-code-btn {
+  opacity: 1;
+}
+
+.copy-code-btn:hover {
+  background: rgba(127,127,127,0.3);
+  color: var(--app-text);
+}
+
+/* ── Light theme tweaks ──────────────────────────────────────────────────── */
+/*
+ * Most theming is now handled via CSS custom properties above.
+ * These rules handle edge-cases where Bootstrap's own dark/light
+ * classes haven't been applied, or need a small nudge.
+ */
+
+[data-bs-theme="light"] .tool-notification {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #555;
+}
+
+[data-bs-theme="light"] .tool-notification.success {
+  border-color: rgba(25, 135, 84, 0.4);
+  color: #146c43;
+  background: rgba(25, 135, 84, 0.07);
+}
+
+[data-bs-theme="light"] .tool-notification.error {
+  border-color: rgba(220, 53, 69, 0.4);
+  color: #b02a37;
+  background: rgba(220, 53, 69, 0.07);
+}
+
+[data-bs-theme="light"] .linked-folder-chip {
+  border-color: rgba(255, 153, 0, 0.45);
+  background: rgba(255, 193, 7, 0.1);
+}
+
+[data-bs-theme="light"] .streaming-cursor::after {
+  color: #0d6efd;
+}
+
+/* ── Dark theme tweaks ───────────────────────────────────────────────────── */
+
+[data-bs-theme="dark"] .tool-notification {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #aaa;
+}
+
+[data-bs-theme="dark"] .tool-notification.success {
+  border-color: rgba(25, 135, 84, 0.5);
+  color: #6ee9b1;
+  background: rgba(25, 135, 84, 0.1);
+}
+
+[data-bs-theme="dark"] .tool-notification.error {
+  border-color: rgba(220, 53, 69, 0.5);
+  color: #f88;
+  background: rgba(220, 53, 69, 0.1);
+}
+
+[data-bs-theme="dark"] .linked-folder-chip {
+  border-color: rgba(255, 193, 7, 0.35);
+  background: rgba(255, 193, 7, 0.07);
+}
+
+[data-bs-theme="dark"] .streaming-cursor::after {
+  color: #6ea8fe;
+}
+
+
+.message-user .edit-msg-btn {
+  opacity: 0;
+  font-size: 0.75rem;
+  vertical-align: middle;
+  transition: opacity 0.15s;
+  color: rgba(255,255,255,0.7);
+}
+
+.message-user:hover .edit-msg-btn {
+  opacity: 1;
+}
+
+/* ── Regenerate button ───────────────────────────────────────────────────── */
+
+.regen-btn {
+  font-size: 0.78rem;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.message-assistant:hover .regen-btn {
+  opacity: 1;
+}
+
+/* ── Conversation folders (sidebar) ──────────────────────────────────────── */
+
+.folder-item {
+  margin: 2px 4px;
+}
+
+.folder-header {
+  border-radius: 5px;
+  padding: 5px 8px;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.folder-header:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.folder-title {
+  font-size: 0.85rem;
+  color: var(--app-text-muted);
+}
+
+.folder-count {
+  font-size: 0.7rem;
+}
+
+.folder-actions button {
+  background: transparent;
+  border: none;
+  color: var(--app-text-muted);
+  padding: 0 3px;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.folder-actions button:hover {
+  color: var(--app-text);
+  background: rgba(127, 127, 127, 0.15);
+}
+
+.folder-rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.35);
+}
+
+.folder-children {
+  padding-left: 10px;
+}
+
+.conv-item-indented {
+  margin-left: 6px;
+}
+
+/* three-dots more button */
+.conv-item .btn-more {
+  background: transparent;
+  border: none;
+  color: var(--app-text-muted);
+  padding: 0 3px;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.conv-item .btn-more:hover {
+  color: var(--app-text);
+  background: rgba(127, 127, 127, 0.15);
+}
+
+/* ── Drag-and-drop ───────────────────────────────────────────────────────── */
+
+/* Conversation being dragged */
+.conv-item-dragging {
+  opacity: 0.45;
+  outline: 2px dashed rgba(110, 168, 254, 0.6);
+  border-radius: 6px;
+}
+
+/* Folder header or unsorted zone receiving a drag */
+.folder-header.drop-target-active {
+  background: rgba(13, 110, 253, 0.18) !important;
+  outline: 2px dashed rgba(110, 168, 254, 0.7);
+  border-radius: 5px;
+}
+
+.unsorted-drop-zone.drop-target-active {
+  background: rgba(127, 127, 127, 0.12);
+  outline: 2px dashed rgba(127, 127, 127, 0.5);
+  border-radius: 4px;
+  padding-bottom: 4px;
+}

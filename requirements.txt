@@ -1,0 +1,15 @@
+# Upgrade instructions:
+#   pip install --upgrade flask openai pypdf python-docx openpyxl
+#   pip install -r requirements.txt --upgrade  # upgrade all pinned packages
+#
+# Notes:
+#   - == pins exact versions for reproducible production builds
+#   - Remove == or change to >= to allow automatic upgrades
+#   - Use pip list --outdated to check for available updates
+
+flask==3.1.0
+flask-cors==5.0.0
+openai==1.82.0
+pypdf==5.1.0
+python-docx==1.1.2
+openpyxl==3.1.5
