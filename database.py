@@ -2,11 +2,66 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from datetime import datetime, timezone
+from cryptography.fernet import Fernet
 import os
+import base64
+import hashlib
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "chat.db")
 
 db = SQLAlchemy()
+
+
+def _get_encryption_key():
+    key = os.environ.get("ENCRYPTION_KEY")
+    if not key:
+        key = Fernet.generate_key().decode('utf-8')
+        os.environ["ENCRYPTION_KEY"] = key
+        env_path = os.path.join(os.path.dirname(__file__), ".env")
+        try:
+            if os.path.isfile(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if "ENCRYPTION_KEY" not in content:
+                    with open(env_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n# Auto-generated secret key for API key encryption:\nENCRYPTION_KEY={key}\n")
+        except Exception:
+            pass
+    return key.encode('utf-8')
+
+
+_fernet_instance = None
+
+
+def _get_fernet():
+    global _fernet_instance
+    if _fernet_instance is None:
+        try:
+            key = _get_encryption_key()
+            _fernet_instance = Fernet(key)
+        except Exception:
+            raw_key = os.environ.get("ENCRYPTION_KEY", "fallback-default-key-safe")
+            hashed = hashlib.sha256(raw_key.encode('utf-8')).digest()
+            base64_key = base64.urlsafe_b64encode(hashed)
+            _fernet_instance = Fernet(base64_key)
+    return _fernet_instance
+
+
+def encrypt_val(val: str) -> str:
+    if not val:
+        return ""
+    f = _get_fernet()
+    return f.encrypt(val.encode('utf-8')).decode('utf-8')
+
+
+def decrypt_val(val: str) -> str:
+    if not val:
+        return ""
+    try:
+        f = _get_fernet()
+        return f.decrypt(val.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return val
 
 
 @event.listens_for(Engine, "connect")
@@ -76,7 +131,7 @@ class Endpoint(db.Model):
             "id": self.id,
             "name": self.name,
             "base_url": self.base_url,
-            "api_key": self.api_key,
+            "api_key": decrypt_val(self.api_key),
             "default_model": self.default_model,
             "is_default": self.is_default,
             "model_filter": self.model_filter,
@@ -274,9 +329,26 @@ def init_db(app=None):
         with app.app_context():
             db.create_all()
             _seed_personas_and_settings()
+            migrate_existing_api_keys()
     else:
         db.create_all()
         _seed_personas_and_settings()
+        migrate_existing_api_keys()
+
+
+def migrate_existing_api_keys():
+    endpoints = Endpoint.query.all()
+    migrated = False
+    for ep in endpoints:
+        if ep.api_key:
+            # Check if it is plaintext
+            decrypted = decrypt_val(ep.api_key)
+            if decrypted == ep.api_key:
+                # It is plaintext! Encrypt and save!
+                ep.api_key = encrypt_val(ep.api_key)
+                migrated = True
+    if migrated:
+        db.session.commit()
 
 
 def _seed_personas_and_settings():
@@ -468,7 +540,7 @@ def create_endpoint(name: str, base_url: str, api_key: str = "", default_model: 
     ep = Endpoint(
         name=name,
         base_url=base_url,
-        api_key=api_key,
+        api_key=encrypt_val(api_key),
         default_model=default_model,
         is_default=1 if is_default else 0,
         model_filter=model_filter,
@@ -497,7 +569,7 @@ def update_endpoint(endpoint_id: int, name: str = None, base_url: str = None,
     if base_url is not None:
         ep.base_url = base_url
     if api_key is not None:
-        ep.api_key = api_key
+        ep.api_key = encrypt_val(api_key)
     if default_model is not None:
         ep.default_model = default_model
     if model_filter is not None:
