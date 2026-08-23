@@ -260,6 +260,18 @@
             the default for new conversations; each conversation can also override which endpoint it uses.
           </div>
 
+          <!-- Research sources management -->
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-label text-secondary mb-0">Research Sources</label>
+            <button class="btn btn-sm btn-outline-primary" id="btnNewResearchSource">
+              <i class="bi bi-plus-lg me-1"></i>New Source
+            </button>
+          </div>
+          <div id="researchSourceList" class="d-flex flex-column gap-2 mb-2" style="max-height:300px;overflow-y:auto;"></div>
+          <div class="form-text text-secondary mt-1 mb-4">
+            The model may fetch pages only from enabled URLs and their subpaths. Use source domains or specific URL paths you trust.
+          </div>
+
           <hr class="border-secondary mb-4" />
 
           <!-- Browser root -->
@@ -663,6 +675,37 @@
         <div class="modal-body p-0">
           <iframe id="helpFrame" title="Help &amp; User Guide"
                   style="width:100%;height:100%;border:0;display:block;background:transparent"></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Research Source Edit Modal ─────────────────────────────────────── -->
+  <div class="modal fade" id="researchSourceModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="researchSourceModalTitle">New Research Source</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label text-secondary">Name</label>
+            <input type="text" id="researchSourceNameInput" class="form-control border-secondary" placeholder="e.g. Google Scholar" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-secondary">Allowed URL</label>
+            <input type="url" id="researchSourceUrlInput" class="form-control border-secondary" placeholder="https://scholar.google.com" />
+            <div class="form-text text-secondary">Pages under this host and path will be allowed. HTTPS is recommended.</div>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="researchSourceEnabledInput" checked />
+            <label class="form-check-label text-secondary" for="researchSourceEnabledInput">Enabled</label>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnResearchSourceSave">Save Source</button>
         </div>
       </div>
     </div>

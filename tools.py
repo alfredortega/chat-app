@@ -5,14 +5,38 @@ Tools: write_file, read_file, list_directory, run_python
 
 import os
 import json
+import ipaddress
+import socket
 import subprocess
 import sys
 import tempfile
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
+from urllib.request import Request, build_opener, HTTPRedirectHandler
 import database as db
 
 # ── Tool schema (sent to the model) ───────────────────────────────────────────
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_webpage",
+            "description": (
+                "Fetch and read an approved research webpage. Use this for academic "
+                "research when the user provides a URL or when a URL can be constructed "
+                "for an enabled source such as Google Scholar. Only URLs matching an "
+                "enabled research source are permitted. Do not use this for arbitrary URLs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The approved webpage URL to fetch."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -142,6 +166,8 @@ def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) ->
 
     if name == "write_file":
         return _write_file(args, output_dir=output_dir)
+    if name == "fetch_webpage":
+        return _fetch_webpage(args)
     if name == "read_file":
         return _read_file(args)
     if name == "list_directory":
@@ -154,6 +180,95 @@ def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) ->
         "result": f"Unknown tool: {name}",
         "display": f"❌ Unknown tool '{name}'.",
     }
+
+
+class _PageTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in {"script", "style", "noscript", "svg"}:
+            self.skip_depth += 1
+        elif self.skip_depth == 0 and tag.lower() in {"p", "br", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag.lower() in {"script", "style", "noscript", "svg"} and self.skip_depth:
+            self.skip_depth -= 1
+        elif self.skip_depth == 0 and tag.lower() in {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if self.skip_depth == 0:
+            self.parts.append(data)
+
+
+def _url_is_allowed(url: str) -> bool:
+    target = urlsplit(url)
+    if target.scheme not in {"http", "https"} or not target.hostname:
+        return False
+    try:
+        addresses = socket.getaddrinfo(target.hostname, None)
+        if any(ipaddress.ip_address(item[4][0]).is_private or ipaddress.ip_address(item[4][0]).is_loopback for item in addresses):
+            return False
+    except (OSError, ValueError):
+        return False
+    for source in db.list_research_sources():
+        if not source["enabled"]:
+            continue
+        allowed = urlsplit(source["url"])
+        if target.scheme == allowed.scheme and target.hostname.lower() == allowed.hostname.lower():
+            allowed_path = allowed.path.rstrip("/")
+            if not allowed_path or target.path == allowed_path or target.path.startswith(allowed_path + "/"):
+                return True
+    return False
+
+
+class _AllowedRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_is_allowed(newurl):
+            raise ValueError("redirect target is not on the enabled research source list")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _fetch_webpage(args: dict) -> dict:
+    url = (args.get("url") or "").strip()
+    if not _url_is_allowed(url):
+        return {"success": False, "result": "URL is not permitted by the enabled research source list.",
+                "display": "Research fetch blocked: URL is not on the enabled source list.",
+                "blocked_url": url}
+    try:
+        request = Request(url, headers={"User-Agent": "ResearchAssistant/1.0"})
+        opener = build_opener(_AllowedRedirectHandler())
+        with opener.open(request, timeout=15) as response:
+            content_type = response.headers.get_content_type()
+            if content_type not in {"text/html", "text/plain", "application/pdf"}:
+                return {"success": False, "result": f"Unsupported content type: {content_type}",
+                        "display": f"Research fetch skipped: unsupported content type {content_type}."}
+            body = response.read(2_000_001)
+            if len(body) > 2_000_000:
+                body = body[:2_000_000]
+                truncated = True
+            else:
+                truncated = False
+            if content_type == "application/pdf":
+                from pypdf import PdfReader
+                import io
+                text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(body)).pages)
+            elif content_type == "text/html":
+                parser = _PageTextParser()
+                parser.feed(body.decode(response.headers.get_content_charset() or "utf-8", errors="replace"))
+                text = " ".join("".join(parser.parts).split())
+            else:
+                text = body.decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+        note = "\n\n[Response truncated at 2,000,000 bytes]" if truncated else ""
+        return {"success": True, "result": f"Source URL: {url}\n\n{text}{note}",
+                "display": f"Fetched research source: `{url}`"}
+    except Exception as exc:
+        return {"success": False, "result": f"Failed to fetch webpage: {exc}",
+                "display": f"Research fetch failed: {exc}"}
 
 
 # ── write_file ─────────────────────────────────────────────────────────────────

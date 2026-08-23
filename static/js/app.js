@@ -6,6 +6,7 @@ const App = {
   models: [],
   personas: [],
   endpoints: [],        // [{ id, name, base_url, api_key_set, is_default }]
+  researchSources: [],  // [{ id, name, url, enabled }]
   outputDir: "",        // app-level default (from settings)
   convOutputDir: "",    // per-conversation override (empty = use app default)
   browserRoot: "",
@@ -23,6 +24,7 @@ const App = {
   personaModal: null,
   deletePersonaModal: null,
   outputDirModal: null,
+  researchSourceModal: null,
 
   async init() {
     // DOM refs
@@ -51,6 +53,7 @@ const App = {
     this.personaModal       = new bootstrap.Modal(document.getElementById("personaModal"));
     this.deletePersonaModal = new bootstrap.Modal(document.getElementById("deletePersonaModal"));
     this.outputDirModal     = new bootstrap.Modal(document.getElementById("outputDirModal"));
+    this.researchSourceModal = new bootstrap.Modal(document.getElementById("researchSourceModal"));
     this.helpModal          = new bootstrap.Modal(document.getElementById("helpModal"));
 
     // Init sub-modules
@@ -204,6 +207,8 @@ const App = {
     document.getElementById("btnNewEndpoint").addEventListener("click", () => this.openEndpointModal(null));
     document.getElementById("btnEndpointSave").addEventListener("click", () => this.saveEndpoint());
     document.getElementById("btnDeleteEndpointConfirm").addEventListener("click", () => this.confirmDeleteEndpoint());
+    document.getElementById("btnNewResearchSource").addEventListener("click", () => this.openResearchSourceModal(null));
+    document.getElementById("btnResearchSourceSave").addEventListener("click", () => this.saveResearchSource());
     document.getElementById("btnToggleEndpointKey").addEventListener("click", () => {
       const input = document.getElementById("endpointKeyInput");
       const btn   = document.getElementById("btnToggleEndpointKey");
@@ -239,13 +244,15 @@ const App = {
         .catch((err) => {
           console.warn("Failed to load models:", err);
         });
-      const [settingsData, personasData, endpointsData] = await Promise.all([
+      const [settingsData, personasData, endpointsData, researchSourcesData] = await Promise.all([
         API.getSettings(),
         API.listPersonas(),
         API.listEndpoints(),
+        API.listResearchSources(),
       ]);
       this.personas = personasData        || [];
       this.endpoints = endpointsData      || [];
+      this.researchSources = researchSourcesData || [];
       this.outputDir    = settingsData.output_dir    || "";
       this.browserRoot  = settingsData.browser_root  || "";
       const ep = this._currentEndpoint();
@@ -256,6 +263,7 @@ const App = {
       this._populateModelSelects();
       this._populatePersonaSelects();
       this._populateEndpointSelects();
+      this._renderResearchSourceList();
       this._renderOutputDirBtn();    } catch (err) {
       console.error("Failed to load models/settings/personas/endpoints:", err);
       this.modelSelect.innerHTML = '<option value="">Failed to load models</option>';
@@ -478,6 +486,97 @@ const App = {
         </button>
       </div>
     `).join("");
+  },
+
+  _renderResearchSourceList() {
+    const container = document.getElementById("researchSourceList");
+    if (!container) return;
+    if (!this.researchSources.length) {
+      container.innerHTML = '<p class="text-secondary small mb-0">No sources yet. Add trusted research sites to enable webpage fetching.</p>';
+      return;
+    }
+    container.innerHTML = this.researchSources.map((source) => `
+      <div class="research-source-row d-flex align-items-center gap-2 p-2 rounded border border-secondary">
+        <i class="bi bi-globe2 ${source.enabled ? "text-primary" : "text-secondary"} flex-shrink-0"></i>
+        <div class="flex-grow-1 min-w-0">
+          <div class="small fw-semibold text-truncate">${_escAttr(source.name)}
+            ${source.enabled ? "" : '<span class="badge bg-secondary ms-1" style="font-size:0.65rem">Disabled</span>'}
+          </div>
+          <div class="text-secondary text-truncate" style="font-size:0.75rem">${_escAttr(source.url)}</div>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="App.openResearchSourceModal(${source.id})" title="Edit">
+          <i class="bi bi-pencil"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="App.deleteResearchSource(${source.id})" title="Delete">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+    `).join("");
+  },
+
+  _editingResearchSourceId: null,
+  _researchSourceApprovalCallback: null,
+
+  openResearchSourceModal(id, suggestedUrl = "", onApproved = null) {
+    this._editingResearchSourceId = id;
+    this._researchSourceApprovalCallback = onApproved;
+    const source = id ? this.researchSources.find((item) => item.id === id) : null;
+    document.getElementById("researchSourceModalTitle").textContent = source ? "Edit Research Source" : "New Research Source";
+    document.getElementById("researchSourceNameInput").value = source ? source.name : (suggestedUrl ? this._researchSourceName(suggestedUrl) : "");
+    document.getElementById("researchSourceUrlInput").value = source ? source.url : suggestedUrl;
+    document.getElementById("researchSourceEnabledInput").checked = source ? !!source.enabled : true;
+    this.researchSourceModal.show();
+    setTimeout(() => document.getElementById("researchSourceNameInput").focus(), 300);
+  },
+
+  _researchSourceName(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (_) {
+      return "Research Source";
+    }
+  },
+
+  async saveResearchSource() {
+    const name = document.getElementById("researchSourceNameInput").value.trim();
+    const url = document.getElementById("researchSourceUrlInput").value.trim();
+    const enabled = document.getElementById("researchSourceEnabledInput").checked;
+    if (!name || !url) {
+      alert("Both a name and an allowed URL are required.");
+      return;
+    }
+    let approvalCallback = null;
+    try {
+      if (this._editingResearchSourceId) {
+        const updated = await API.updateResearchSource(this._editingResearchSourceId, { name, url, enabled });
+        const index = this.researchSources.findIndex((item) => item.id === this._editingResearchSourceId);
+        if (index !== -1) this.researchSources[index] = updated;
+      } else {
+        this.researchSources.push(await API.createResearchSource({ name, url, enabled }));
+      }
+      this.researchSources.sort((a, b) => a.name.localeCompare(b.name));
+      this._renderResearchSourceList();
+      approvalCallback = this._researchSourceApprovalCallback;
+    } catch (err) {
+      alert("Failed to save research source: " + err.message);
+    } finally {
+      this.researchSourceModal.hide();
+      this._editingResearchSourceId = null;
+      this._researchSourceApprovalCallback = null;
+    }
+    if (approvalCallback) await approvalCallback();
+  },
+
+  async deleteResearchSource(id) {
+    const source = this.researchSources.find((item) => item.id === id);
+    if (!source || !confirm(`Delete research source "${source.name}"?`)) return;
+    try {
+      await API.deleteResearchSource(id);
+      this.researchSources = this.researchSources.filter((item) => item.id !== id);
+      this._renderResearchSourceList();
+    } catch (err) {
+      alert("Failed to delete research source: " + err.message);
+    }
   },
 
   /** Sync the chat-header endpoint dropdown to the active conversation */
@@ -999,7 +1098,7 @@ const App = {
               break;
             case "tool_result":
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
-              Chat.appendToolNotification(event.success, event.display);
+              Chat.appendToolNotification(event.success, event.display, event.blocked_url);
               break;
             case "title":
               if (event.conv_id === this.activeConvId) {
@@ -1094,7 +1193,7 @@ const App = {
               streamBubble.append(event.content); break;
             case "tool_result":
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
-              Chat.appendToolNotification(event.success, event.display); break;
+              Chat.appendToolNotification(event.success, event.display, event.blocked_url); break;
             case "done":
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
               this._refreshTokenCount(); break;
@@ -1194,7 +1293,7 @@ const App = {
                 streamBubble.append(event.content); break;
               case "tool_result":
                 if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
-                Chat.appendToolNotification(event.success, event.display); break;
+                Chat.appendToolNotification(event.success, event.display, event.blocked_url); break;
               case "done":
                 if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
                 Conversations.bumpToTop(this.activeConvId);
@@ -1448,6 +1547,7 @@ const App = {
     document.getElementById("settingsOutputDirPane").classList.add("d-none");
     this._renderPersonaList();
     this._renderEndpointList();
+    this._renderResearchSourceList();
     this.settingsModal.show();
   },
 

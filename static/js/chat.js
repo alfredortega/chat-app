@@ -219,7 +219,7 @@ const Chat = {
     };
   },
 
-  appendToolNotification(success, displayText) {
+  appendToolNotification(success, displayText, blockedUrl = "") {
     const wrapper = document.createElement("div");
     wrapper.className = "message-tool";
 
@@ -231,6 +231,18 @@ const Chat = {
     pill.innerHTML = html;
 
     wrapper.appendChild(pill);
+    if (blockedUrl) {
+      const approveButton = document.createElement("button");
+      approveButton.className = "btn btn-sm btn-outline-primary ms-2";
+      approveButton.title = "Add this URL to approved research sources";
+      approveButton.innerHTML = '<i class="bi bi-shield-check me-1"></i>Approve source';
+      approveButton.addEventListener("click", () => App.openResearchSourceModal(
+        null,
+        blockedUrl,
+        () => App.regenerateResponse()
+      ));
+      wrapper.appendChild(approveButton);
+    }
     this.messagesArea.appendChild(wrapper);
     this.scrollToBottom();
     return wrapper;

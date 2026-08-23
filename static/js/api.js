@@ -85,6 +85,40 @@ const API = {
     return res.json(); // { ok: true, settings: {...} }
   },
 
+  // ── Research sources ───────────────────────────────────────────────────────
+
+  async listResearchSources() {
+    const res = await fetch("/api/research-sources");
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createResearchSource(data) {
+    const res = await fetch("/api/research-sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async updateResearchSource(id, data) {
+    const res = await fetch(`/api/research-sources/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteResearchSource(id) {
+    const res = await fetch(`/api/research-sources/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
   async openOutputDir(conversationId) {
     const res = await fetch("/api/open-output-dir", {
       method: "POST",

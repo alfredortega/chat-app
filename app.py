@@ -236,6 +236,54 @@ def reset_settings():
     return jsonify({"ok": True, "settings": result})
 
 
+# ── Research sources ──────────────────────────────────────────────────────────
+
+@app.route("/api/research-sources", methods=["GET"])
+def list_research_sources():
+    return jsonify(db.list_research_sources())
+
+
+@app.route("/api/research-sources", methods=["POST"])
+def create_research_source():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    url = (data.get("url") or "").strip().rstrip("/")
+    if not name or not url:
+        return jsonify({"error": "name and url are required"}), 400
+    if not url.startswith(("https://", "http://")):
+        return jsonify({"error": "url must start with http:// or https://"}), 400
+    return jsonify(db.create_research_source(name, url, bool(data.get("enabled", True)))), 201
+
+
+@app.route("/api/research-sources/<int:source_id>", methods=["PUT"])
+def update_research_source(source_id):
+    source = db.get_research_source(source_id)
+    if not source:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(force=True)
+    name = data.get("name")
+    url = data.get("url")
+    if isinstance(url, str):
+        url = url.strip().rstrip("/")
+        if not url.startswith(("https://", "http://")):
+            return jsonify({"error": "url must start with http:// or https://"}), 400
+    updated = db.update_research_source(
+        source_id,
+        name=name.strip() if isinstance(name, str) else None,
+        url=url,
+        enabled=bool(data["enabled"]) if "enabled" in data else None,
+    )
+    return jsonify(updated)
+
+
+@app.route("/api/research-sources/<int:source_id>", methods=["DELETE"])
+def delete_research_source(source_id):
+    if not db.get_research_source(source_id):
+        return jsonify({"error": "Not found"}), 404
+    db.delete_research_source(source_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/open-output-dir", methods=["POST"])
 def open_output_dir():
     """Open the active conversation's effective output folder locally."""
@@ -484,6 +532,7 @@ def chat(conv_id):
                             "type": "tool_result",
                             "success": result["success"],
                             "display": result["display"],
+                            "blocked_url": result.get("blocked_url"),
                         })
                         yield f"data: {tool_event}\n\n"
 
@@ -594,7 +643,7 @@ def regenerate(conv_id):
                     history.append({"role": "assistant", "content": assistant_content or None, "tool_calls": tc_list})
                     for tc in tc_list:
                         result = execute_tool_call(tc["function"]["name"], tc["function"]["arguments"], output_dir=output_dir)
-                        yield f"data: {json.dumps({'type': 'tool_result', 'success': result['success'], 'display': result['display']})}\n\n"
+                        yield f"data: {json.dumps({'type': 'tool_result', 'success': result['success'], 'display': result['display'], 'blocked_url': result.get('blocked_url')})}\n\n"
                         db.add_message(conv_id, "tool", result["result"], tool_call_id=tc["id"])
                         history.append({"role": "tool", "tool_call_id": tc["id"], "content": result["result"]})
                     continue

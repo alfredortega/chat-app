@@ -218,6 +218,26 @@ class Setting(db.Model):
         }
 
 
+class ResearchSource(db.Model):
+    __tablename__ = 'research_sources'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False)
+    url = db.Column(db.String(1024), nullable=False)
+    enabled = db.Column(db.Integer, nullable=False, default=1)
+    created_at = db.Column(db.String(50), nullable=False)
+    updated_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "url": self.url,
+            "enabled": bool(self.enabled),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
 class ConvFile(db.Model):
     __tablename__ = 'conv_files'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -543,6 +563,52 @@ def reset_settings() -> dict:
         "output_dir": "",
         "browser_root": "",
     }
+
+
+# ── Research sources ─────────────────────────────────────────────────────────
+
+def list_research_sources() -> list[dict]:
+    rows = ResearchSource.query.order_by(ResearchSource.name.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def get_research_source(source_id: int) -> dict | None:
+    source = db.session.get(ResearchSource, source_id)
+    return source.to_dict() if source else None
+
+
+def create_research_source(name: str, url: str, enabled: bool = True) -> dict:
+    now = _now()
+    source = ResearchSource(
+        name=name, url=url, enabled=1 if enabled else 0,
+        created_at=now, updated_at=now,
+    )
+    db.session.add(source)
+    db.session.commit()
+    return source.to_dict()
+
+
+def update_research_source(source_id: int, name: str = None, url: str = None,
+                           enabled: bool = None) -> dict | None:
+    source = db.session.get(ResearchSource, source_id)
+    if not source:
+        return None
+    if name is not None:
+        source.name = name
+    if url is not None:
+        source.url = url
+    if enabled is not None:
+        source.enabled = 1 if enabled else 0
+    source.updated_at = _now()
+    db.session.commit()
+    return source.to_dict()
+
+
+def delete_research_source(source_id: int):
+    source = db.session.get(ResearchSource, source_id)
+    if source:
+        db.session.delete(source)
+        db.session.commit()
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
