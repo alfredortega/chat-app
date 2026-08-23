@@ -7,6 +7,22 @@ import os
 import base64
 import hashlib
 
+def load_dotenv():
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.isfile(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    os.environ[key] = val
+
+load_dotenv()
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "chat.db")
 
 db = SQLAlchemy()
@@ -354,6 +370,9 @@ def migrate_existing_api_keys():
     migrated = False
     for ep in endpoints:
         if ep.api_key:
+            # If it already looks like a Fernet token, skip migrating it
+            if ep.api_key.strip().startswith("gAAAAA"):
+                continue
             # Check if it is plaintext
             decrypted = decrypt_val(ep.api_key)
             if decrypted == ep.api_key:

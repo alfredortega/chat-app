@@ -72,6 +72,15 @@ def get_client(endpoint: dict = None) -> OpenAI:
         base_url = ""
         api_key  = ""
 
+    # Fall back to environment variables if no key is configured in the database
+    if not api_key:
+        if "openrouter.ai" in base_url:
+            api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+        elif "googleapis.com" in base_url:
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY") or ""
+
     # Local servers (LMStudio, Ollama, etc.) often don't require an API key,
     # but the OpenAI SDK still needs a non-empty string, so provide a
     # harmless placeholder when one isn't configured.
