@@ -100,8 +100,9 @@ const Conversations = {
     const container = document.getElementById("convList");
     container.innerHTML = "";
 
-    const folders = (typeof Folders !== "undefined") ? Folders.list : [];
-    const allConvs = this._list;
+    const showArchived = (typeof App !== "undefined") && App.showArchived;
+    const folders = (typeof Folders !== "undefined") ? (showArchived ? Folders.list : Folders.list.filter((f) => !f.archived)) : [];
+    const allConvs = showArchived ? this._list : this._list.filter((c) => !c.archived);
 
     if (allConvs.length === 0 && folders.length === 0) {
       container.innerHTML =
@@ -130,18 +131,24 @@ const Conversations = {
 
       const folderEl = document.createElement("div");
       folderEl.className = "folder-item";
+      if (folder.archived) {
+        folderEl.classList.add("archived-item");
+      }
       folderEl.dataset.folderId = folder.id;
+
+      const archivedBadge = folder.archived ? ` <span class="archived-badge">Archived</span>` : "";
 
       folderEl.innerHTML = `
         <div class="folder-header d-flex align-items-center gap-1 px-2 py-1" style="cursor:pointer">
           <i class="bi bi-chevron-${collapsed ? "right" : "down"} text-secondary flex-shrink-0" style="font-size:0.7rem"></i>
           <i class="bi bi-folder${collapsed ? "" : "-open"} text-warning flex-shrink-0" style="font-size:0.85rem"></i>
-          <span class="folder-title flex-grow-1 text-truncate small fw-semibold" title="${_esc(folder.name)}">${_esc(folder.name)}</span>
+          <span class="folder-title flex-grow-1 text-truncate small fw-semibold" title="${_esc(folder.name)}">${_esc(folder.name)}${archivedBadge}</span>
           <span class="folder-count text-secondary" style="font-size:0.7rem">${folderConvs.length}</span>
           <span class="folder-actions d-none gap-1">
             <button class="btn-folder-new-chat" title="New chat in this folder"><i class="bi bi-plus-lg"></i></button>
             <button class="btn-folder-rename" title="Rename folder"><i class="bi bi-pencil"></i></button>
             <button class="btn-folder-export" title="Export folder as ZIP"><i class="bi bi-box-arrow-up"></i></button>
+            <button class="btn-folder-archive" title="${folder.archived ? "Unarchive folder" : "Archive folder"}"><i class="bi bi-${folder.archived ? "box-arrow-up" : "archive"}"></i></button>
             <button class="btn-folder-delete text-danger" title="Delete folder"><i class="bi bi-trash"></i></button>
           </span>
         </div>
@@ -181,6 +188,27 @@ const Conversations = {
       folderEl.querySelector(".btn-folder-export").addEventListener("click", (e) => {
         e.stopPropagation();
         API.exportFolder(folder.id);
+      });
+      folderEl.querySelector(".btn-folder-archive").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const nextArchivedState = !folder.archived;
+        const msg = nextArchivedState 
+          ? `Archive folder "${folder.name}"? All conversations inside it will also be archived.`
+          : `Unarchive folder "${folder.name}"? All conversations inside it will also be unarchived.`;
+        if (!confirm(msg)) return;
+        try {
+          await API.updateFolder(folder.id, { archived: nextArchivedState });
+          Folders.update(folder.id, { archived: nextArchivedState ? 1 : 0 });
+          Conversations._list.forEach((c) => {
+            if (c.folder_id === folder.id) {
+              c.archived = nextArchivedState ? 1 : 0;
+            }
+          });
+          Conversations._render();
+          Conversations.setActive(Conversations._activeId);
+        } catch (err) {
+          alert("Failed to update folder archive state: " + err.message);
+        }
       });
       folderEl.querySelector(".btn-folder-delete").addEventListener("click", (e) => {
         e.stopPropagation();
@@ -266,6 +294,9 @@ const Conversations = {
   _makeConvItem(conv, indented) {
     const item = document.createElement("div");
     item.className = "conv-item" + (indented ? " conv-item-indented" : "");
+    if (conv.archived) {
+      item.classList.add("archived-item");
+    }
     item.dataset.id = conv.id;
     item.draggable = true;
     if (conv.id === this._activeId) item.classList.add("active");
@@ -289,15 +320,18 @@ const Conversations = {
          ${folderOptions}`
       : "";
 
+    const archivedBadge = conv.archived ? ` <span class="archived-badge">Archived</span>` : "";
+
     item.innerHTML = `
       <i class="bi bi-chat text-secondary flex-shrink-0" style="font-size:0.85rem"></i>
-      <span class="conv-title" title="${_esc(conv.title)}">${_esc(conv.title)}</span>
+      <span class="conv-title" title="${_esc(conv.title)}">${_esc(conv.title)}${archivedBadge}</span>
       <span class="conv-actions">
         <button class="btn-rename" title="Rename"><i class="bi bi-pencil"></i></button>
         <div class="dropdown d-inline">
           <button class="btn-more" title="More options" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-three-dots-vertical"></i></button>
           <ul class="dropdown-menu dropdown-menu-end shadow border-secondary" style="min-width:160px;font-size:0.85rem">
             <li><a class="dropdown-item small" href="#" data-action="rename"><i class="bi bi-pencil me-2"></i>Rename</a></li>
+            <li><a class="dropdown-item small" href="#" data-action="archive-toggle"><i class="bi bi-${conv.archived ? "box-arrow-up" : "archive"} me-2"></i>${conv.archived ? "Unarchive" : "Archive"}</a></li>
             <li><a class="dropdown-item small text-danger" href="#" data-action="delete"><i class="bi bi-trash me-2"></i>Delete</a></li>
             ${folderMenuSection}
           </ul>
@@ -318,12 +352,33 @@ const Conversations = {
 
     // Dropdown actions
     item.querySelectorAll("[data-action]").forEach((el) => {
-      el.addEventListener("click", (e) => {
+      el.addEventListener("click", async (e) => {
         e.preventDefault();
         e.stopPropagation();
         const action = el.dataset.action;
         if (action === "rename") App.promptRename(conv.id);
         if (action === "delete") App.promptDelete(conv.id);
+        if (action === "archive-toggle") {
+          const nextArchivedState = !conv.archived;
+          const msg = nextArchivedState 
+            ? `Archive conversation "${conv.title}"?`
+            : `Unarchive conversation "${conv.title}"?`;
+          if (!confirm(msg)) return;
+          try {
+            await API.updateConversation(conv.id, { archived: nextArchivedState });
+            conv.archived = nextArchivedState ? 1 : 0;
+            if (!nextArchivedState && conv.folder_id) {
+              const parentFolder = typeof Folders !== "undefined" && Folders.getById(conv.folder_id);
+              if (parentFolder && parentFolder.archived) {
+                conv.folder_id = null; // Full sync choice: move to unsorted so it is visible
+              }
+            }
+            Conversations._render();
+            Conversations.setActive(Conversations._activeId);
+          } catch (err) {
+            alert("Failed to update conversation archive state: " + err.message);
+          }
+        }
       });
     });
 

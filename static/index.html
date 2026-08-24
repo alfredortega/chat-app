@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My Chat App</title>
+  <title>Al's Chat App</title>
   <link rel="icon" type="image/x-icon" href="/ai.ico" />
 
   <!-- Bootstrap 5 -->
@@ -33,7 +33,7 @@
   <!-- ── Top Navbar ─────────────────────────────────────────────────────── -->
   <nav class="navbar app-navbar border-bottom border-secondary flex-shrink-0 px-3 py-2">
     <span class="navbar-brand mb-0 h5 d-flex align-items-center gap-2">
-      <i class="bi bi-robot text-primary"></i> My Chat App
+      <i class="bi bi-robot text-primary"></i> Al's Chat App
     </span>
     <div class="d-flex align-items-center gap-2">
       <!-- Model selector -->
@@ -70,6 +70,10 @@
           <input type="text" id="searchInput" class="form-control border-secondary"
             placeholder="Search conversations…" autocomplete="off" />
           <button class="btn btn-outline-secondary d-none" id="btnSearchClear" title="Clear search"><i class="bi bi-x"></i></button>
+        </div>
+        <div class="form-check form-switch small ps-5" style="font-size:0.78rem">
+          <input class="form-check-input" type="checkbox" id="chkShowArchived">
+          <label class="form-check-label text-secondary" for="chkShowArchived">Show archived</label>
         </div>
       </div>
       <div id="convList" class="flex-grow-1 overflow-y-auto py-1">

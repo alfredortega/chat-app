@@ -706,3 +706,18 @@ body {
   border-radius: 4px;
   padding-bottom: 4px;
 }
+
+/* Archived item styles */
+.archived-item {
+  opacity: 0.5;
+}
+.archived-badge {
+  font-size: 0.65rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background-color: rgba(127, 127, 127, 0.2);
+  color: var(--app-text-muted);
+  margin-left: 4px;
+  display: inline-block;
+  vertical-align: middle;
+}

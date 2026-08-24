@@ -370,6 +370,10 @@ def update_conversation(conv_id):
     raw_folder   = data.get("folder_id")
     folder_id    = int(raw_folder) if raw_folder else None
     clear_folder = "folder_id" in data and not raw_folder
+    
+    raw_archived = data.get("archived")
+    archived = bool(raw_archived) if raw_archived is not None else None
+
     db.update_conversation(
         conv_id,
         title=data.get("title"),
@@ -382,6 +386,7 @@ def update_conversation(conv_id):
         clear_endpoint=clear_endpoint,
         folder_id=folder_id,
         clear_folder=clear_folder,
+        archived=archived,
     )
     return jsonify(db.get_conversation(conv_id))
 
@@ -1015,10 +1020,12 @@ def update_folder(folder_id):
     data = request.get_json(force=True)
     name     = data.get("name")
     position = data.get("position")
+    archived = data.get("archived")
     db.update_folder(
         folder_id,
         name=(name.strip() if isinstance(name, str) else None),
         position=(int(position) if position is not None else None),
+        archived=(bool(archived) if archived is not None else None),
     )
     return jsonify(db.get_folder(folder_id))
 

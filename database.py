@@ -99,6 +99,7 @@ class Folder(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(255), nullable=False)
     position = db.Column(db.Integer, nullable=False, default=0)
+    archived = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.String(50), nullable=False)
     updated_at = db.Column(db.String(50), nullable=False)
 
@@ -107,6 +108,7 @@ class Folder(db.Model):
             "id": self.id,
             "name": self.name,
             "position": self.position,
+            "archived": self.archived,
             "created_at": self.created_at,
             "updated_at": self.updated_at
         }
@@ -166,6 +168,7 @@ class Conversation(db.Model):
     output_dir = db.Column(db.String(512), nullable=False, default='')
     enable_tools = db.Column(db.Integer, nullable=False, default=1)
     folder_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='SET NULL'), nullable=True, index=True)
+    archived = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.String(50), nullable=False)
     updated_at = db.Column(db.String(50), nullable=False)
 
@@ -179,6 +182,7 @@ class Conversation(db.Model):
             "output_dir": self.output_dir,
             "enable_tools": self.enable_tools,
             "folder_id": self.folder_id,
+            "archived": self.archived,
             "created_at": self.created_at,
             "updated_at": self.updated_at
         }
@@ -364,14 +368,32 @@ def init_db(app=None):
     if app:
         with app.app_context():
             db.create_all()
+            _ensure_archived_columns()
             _seed_personas_and_settings()
             _ensure_api_key_column_capacity()
             migrate_existing_api_keys()
     else:
         db.create_all()
+        _ensure_archived_columns()
         _seed_personas_and_settings()
         _ensure_api_key_column_capacity()
         migrate_existing_api_keys()
+
+
+def _ensure_archived_columns():
+    inspector = inspect(db.engine)
+    
+    # Check folders table
+    columns = [c["name"] for c in inspector.get_columns("folders")]
+    if "archived" not in columns:
+        db.session.execute(text("ALTER TABLE folders ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"))
+        db.session.commit()
+        
+    # Check conversations table
+    columns = [c["name"] for c in inspector.get_columns("conversations")]
+    if "archived" not in columns:
+        db.session.execute(text("ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"))
+        db.session.commit()
 
 
 def _ensure_api_key_column_capacity():
@@ -454,7 +476,7 @@ def get_conversation(conversation_id: int) -> dict | None:
     return conv.to_dict() if conv else None
 
 
-def update_conversation(conversation_id: int, title: str = None, model_id: str = None, persona_id: int = None, clear_persona: bool = False, output_dir: str = None, enable_tools: bool = None, endpoint_id: int = None, clear_endpoint: bool = False, folder_id: int = None, clear_folder: bool = False):
+def update_conversation(conversation_id: int, title: str = None, model_id: str = None, persona_id: int = None, clear_persona: bool = False, output_dir: str = None, enable_tools: bool = None, endpoint_id: int = None, clear_endpoint: bool = False, folder_id: int = None, clear_folder: bool = False, archived: bool = None):
     conv = db.session.get(Conversation, conversation_id)
     if not conv:
         return
@@ -482,6 +504,13 @@ def update_conversation(conversation_id: int, title: str = None, model_id: str =
         conv.output_dir = output_dir
     if enable_tools is not None:
         conv.enable_tools = 1 if enable_tools else 0
+
+    if archived is not None:
+        conv.archived = 1 if archived else 0
+        if not archived and conv.folder_id:
+            f = db.session.get(Folder, conv.folder_id)
+            if f and f.archived == 1:
+                conv.folder_id = None
 
     conv.updated_at = _now()
     db.session.commit()
@@ -803,6 +832,7 @@ def edit_message_and_truncate(conversation_id: int, message_id: int, new_content
 def search_all_conversations(query: str) -> list[dict]:
     rows = db.session.query(Conversation.id, Conversation.title, Conversation.updated_at, Message.content)\
         .join(Message, Message.conversation_id == Conversation.id)\
+        .filter(Conversation.archived != 1)\
         .filter(Message.content.ilike(f"%{query}%"))\
         .distinct()\
         .order_by(Conversation.updated_at.desc())\
@@ -884,7 +914,7 @@ def create_folder(name: str) -> dict:
     return f.to_dict()
 
 
-def update_folder(folder_id: int, name: str = None, position: int = None):
+def update_folder(folder_id: int, name: str = None, position: int = None, archived: bool = None):
     f = db.session.get(Folder, folder_id)
     if not f:
         return
@@ -892,6 +922,9 @@ def update_folder(folder_id: int, name: str = None, position: int = None):
         f.name = name
     if position is not None:
         f.position = position
+    if archived is not None:
+        f.archived = 1 if archived else 0
+        Conversation.query.filter_by(folder_id=folder_id).update({Conversation.archived: 1 if archived else 0})
     f.updated_at = _now()
     db.session.commit()
 

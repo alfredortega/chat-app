@@ -160,6 +160,16 @@ const App = {
       this._onSearch();
     });
 
+    // Show archived checkbox
+    this.chkShowArchived = document.getElementById("chkShowArchived");
+    this.showArchived = localStorage.getItem("showArchived") === "true";
+    this.chkShowArchived.checked = this.showArchived;
+    this.chkShowArchived.addEventListener("change", () => {
+      this.showArchived = this.chkShowArchived.checked;
+      localStorage.setItem("showArchived", this.showArchived);
+      Conversations._render();
+    });
+
     // Token count badge
     this.tokenCountBadge = document.getElementById("tokenCountBadge");
 
