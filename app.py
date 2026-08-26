@@ -1006,9 +1006,13 @@ def list_folders():
 def create_folder():
     data = request.get_json(force=True)
     name = (data.get("name") or "").strip()
+    code_folder = bool(data.get("code_folder"))
     if not name:
         return jsonify({"error": "name is required"}), 400
-    folder = db.create_folder(name)
+    if code_folder:
+        folder = db.create_code_folder(name)
+    else:
+        folder = db.create_folder(name)
     return jsonify(folder), 201
 
 

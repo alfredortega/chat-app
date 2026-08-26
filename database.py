@@ -914,6 +914,77 @@ def create_folder(name: str) -> dict:
     return f.to_dict()
 
 
+def create_code_folder(name: str) -> dict:
+    """Create a conversation folder with a code project structure.
+    
+    Creates:
+    - A conversation folder with the given name
+    - A system directory in the default output folder with the same name
+    - Sub-directories: Requirements, Test Planning, UX Design, Data Modeling, Project Management
+    - 5 conversations with specific personas, linked to the system directory
+    """
+    import os
+    
+    # Create the conversation folder first
+    folder = create_folder(name)
+    folder_id = folder["id"]
+    
+    # Get the default output directory
+    output_dir = get_setting("output_dir") or ""
+    if not output_dir:
+        raise ValueError("Default output folder is not configured. Please set it in Settings.")
+    
+    output_dir = os.path.expanduser(output_dir.strip())
+    if not os.path.isdir(output_dir):
+        raise ValueError(f"Default output folder does not exist: {output_dir}")
+    
+    # Create the system directory with the folder name
+    system_dir = os.path.join(output_dir, name)
+    os.makedirs(system_dir, exist_ok=True)
+    
+    # Define the sub-folders and their corresponding conversation titles and personas
+    sub_folders = [
+        ("Requirements", "Analysis", "Business Analyst"),
+        ("Test Planning", "Test Planning", "QA/Tester"),
+        ("UX Design", "UX Design", "UX Designer"),
+        ("Data Modeling", "Data Modeling", "Database Developer"),
+        ("Project Management", "Project Management", "Project Manager"),
+    ]
+    
+    # Get persona IDs for each persona name
+    persona_map = {}
+    for _, _, persona_name in sub_folders:
+        if persona_name not in persona_map:
+            persona = Persona.query.filter_by(name=persona_name).first()
+            if persona:
+                persona_map[persona_name] = persona.id
+            else:
+                persona_map[persona_name] = None
+    
+    # Create sub-directories and conversations
+    for sub_folder_name, conv_title, persona_name in sub_folders:
+        sub_dir = os.path.join(system_dir, sub_folder_name)
+        os.makedirs(sub_dir, exist_ok=True)
+        
+        # Create conversation with the appropriate persona
+        persona_id = persona_map.get(persona_name)
+        conv = create_conversation(
+            title=conv_title,
+            model_id="",
+            persona_id=persona_id,
+            folder_id=folder_id
+        )
+        conv_id = conv["id"]
+        
+        # Link the conversation to the system directory (parent)
+        add_linked_folder(conv_id, system_dir)
+        
+        # Set the conversation's output folder to its matching sub-folder
+        update_conversation(conv_id, output_dir=sub_dir)
+    
+    return folder
+
+
 def update_folder(folder_id: int, name: str = None, position: int = None, archived: bool = None):
     f = db.session.get(Folder, folder_id)
     if not f:

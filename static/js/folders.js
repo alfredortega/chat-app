@@ -40,15 +40,97 @@ const Folders = {
   // ── Create ────────────────────────────────────────────────────────────────
 
   async createFolder() {
-    const name = prompt("Folder name:");
-    if (!name || !name.trim()) return;
-    try {
-      const folder = await API.createFolder(name.trim());
-      this.add(folder);
-      Conversations._render();
-    } catch (err) {
-      alert("Failed to create folder: " + err.message);
-    }
+    return new Promise((resolve) => {
+      // Create a modal dialog for folder creation with Code Folder toggle
+      const modalHtml = `
+        <div class="modal fade" id="newFolderModal" tabindex="-1">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content app-modal border-secondary">
+              <div class="modal-header border-secondary">
+                <h5 class="modal-title">New Folder</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                  <label class="form-label text-secondary">Folder name</label>
+                  <input type="text" id="newFolderNameInput" class="form-control border-secondary" placeholder="Enter folder name" autocomplete="off" />
+                </div>
+                <div class="form-check form-switch mb-3">
+                  <input class="form-check-input" type="checkbox" role="switch" id="newFolderCodeSwitch" />
+                  <label class="form-check-label text-secondary" for="newFolderCodeSwitch">
+                    Code Folder
+                  </label>
+                  <div class="form-text text-secondary">
+                    When enabled, creates a project structure with Analysis, Test Planning, UX Design, Data Modeling, and Project Management conversations linked to a system directory.
+                  </div>
+                </div>
+              </div>
+              <div class="modal-footer border-secondary">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btnNewFolderConfirm">Create</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Remove any existing modal
+      const existingModal = document.getElementById("newFolderModal");
+      if (existingModal) existingModal.remove();
+
+      // Add modal to body
+      document.body.insertAdjacentHTML("beforeend", modalHtml);
+
+      const modalEl = document.getElementById("newFolderModal");
+      const modal = new bootstrap.Modal(modalEl);
+      const nameInput = document.getElementById("newFolderNameInput");
+      const codeSwitch = document.getElementById("newFolderCodeSwitch");
+      const confirmBtn = document.getElementById("btnNewFolderConfirm");
+
+      // Focus the name input when modal is shown
+      modalEl.addEventListener("shown.bs.modal", () => {
+        nameInput.focus();
+      });
+
+      // Clean up modal when hidden
+      modalEl.addEventListener("hidden.bs.modal", () => {
+        modalEl.remove();
+        resolve();
+      });
+
+      // Handle confirm button
+      confirmBtn.addEventListener("click", async () => {
+        const name = nameInput.value.trim();
+        const codeFolder = codeSwitch.checked;
+
+        if (!name) {
+          nameInput.focus();
+          return;
+        }
+
+        modal.hide();
+
+        try {
+          const folder = await API.createFolder(name, codeFolder);
+          this.add(folder);
+          Conversations._render();
+        } catch (err) {
+          alert("Failed to create folder: " + err.message);
+        }
+
+        resolve();
+      });
+
+      // Handle Enter key in name input
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          confirmBtn.click();
+        }
+      });
+
+      modal.show();
+    });
   },
 
   // ── Rename (inline) ───────────────────────────────────────────────────────

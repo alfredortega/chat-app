@@ -328,11 +328,11 @@ const API = {
     return res.json(); // [ { id, name, position, ... } ]
   },
 
-  async createFolder(name) {
+  async createFolder(name, codeFolder = false) {
     const res = await fetch("/api/folders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, code_folder: codeFolder }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
