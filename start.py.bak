@@ -1,6 +1,6 @@
 """
 start.py — Ensure the venv exists, install dependencies if needed,
-           pull latest code from git, start the Flask server, and open the app URL in the default browser.
+           start the Flask server, and open the app URL in the default browser.
 
 Usage:
     python3 start.py
@@ -34,51 +34,6 @@ def venv_pip() -> str:
     if os.name == "nt":
         return os.path.join(VENV_DIR, "Scripts", "pip.exe")
     return os.path.join(VENV_DIR, "bin", "pip")
-
-
-def is_git_repo() -> bool:
-    """Check if the current directory is a git repository."""
-    git_dir = os.path.join(BASE_DIR, ".git")
-    return os.path.isdir(git_dir)
-
-
-def ensure_git_updated():
-    """Pull latest changes from git repository if available."""
-    if not is_git_repo():
-        print("WARNING: Not a git repository. Skipping git pull.")
-        return
-
-    # Check if git is available
-    try:
-        subprocess.run(
-            ["git", "--version"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("WARNING: git command not found. Skipping git pull.")
-        return
-
-    # Try to pull updates
-    try:
-        print("Updating code from git repository...")
-        result = subprocess.run(
-            ["git", "pull"],
-            check=True,
-            capture_output=True,
-            text=True,
-            cwd=BASE_DIR,
-        )
-        if result.stdout.strip():
-            print(result.stdout.strip())
-        if result.stderr.strip():
-            print("Git warnings:", result.stderr.strip())
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to pull from git repository: {e}")
-        print(e.stdout)
-        print(e.stderr)
-        sys.exit(1)
 
 
 def ensure_venv():
@@ -135,7 +90,6 @@ def wait_for_server(url: str, timeout: float) -> bool:
 
 
 def main():
-    ensure_git_updated()
     ensure_venv()
     ensure_dependencies()
 
