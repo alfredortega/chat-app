@@ -8,7 +8,7 @@ routes land in C21 and the SSE job stream in C22.
 
 import os
 
-from flask import Blueprint, request, Response
+from flask import Blueprint, request, Response, stream_with_context
 
 import database as db
 from routes.helpers import api_error, api_ok
@@ -26,7 +26,7 @@ def stream_jobs(project_id: int):
     """SSE live job-progress stream (C22)."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
-    return Response(stream_job_events(project_id), mimetype="text/event-stream",
+    return Response(stream_with_context(stream_job_events(project_id)), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 

@@ -87,10 +87,18 @@ def run_chat_turn(
                             tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
                         if tc.id:
                             tool_calls_accum[idx]["id"] = tc.id
-                        if tc.function and tc.function.get("name"):
-                            tool_calls_accum[idx]["name"] = tc.function["name"]
-                        if tc.function and tc.function.get("arguments"):
-                            tool_calls_accum[idx]["arguments"] += tc.function["arguments"]
+                        if tc.function:
+                            fn = tc.function
+                            name = getattr(fn, "name", None)
+                            if name is None and isinstance(fn, dict):
+                                name = fn.get("name")
+                            if name:
+                                tool_calls_accum[idx]["name"] = name
+                            args_fragment = getattr(fn, "arguments", None)
+                            if args_fragment is None and isinstance(fn, dict):
+                                args_fragment = fn.get("arguments")
+                            if args_fragment:
+                                tool_calls_accum[idx]["arguments"] += args_fragment
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
             return

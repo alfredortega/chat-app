@@ -26,7 +26,7 @@ def load_dotenv():
 # Do not load dotenv automatically at import time to prevent side effects in tests
 # load_dotenv()
 
-from flask import Flask, g, jsonify, request, Response, send_from_directory, send_file, Blueprint, current_app
+from flask import Flask, g, jsonify, request, Response, send_from_directory, send_file, Blueprint, current_app, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
 
@@ -37,7 +37,7 @@ from file_handler import (
     build_file_context, build_linked_folder_context,
     scan_linked_folder, WARN_THRESHOLD,
 )
-from chat_service import run_chat_turn, sse_stream
+from chat_service import run_chat_turn, sse_event
 
 def create_app(config=None):
     """Application factory for creating the Flask app."""
@@ -491,93 +491,87 @@ def chat(conv_id):
 
     def generate():
         """Stream SSE events back to the browser."""
-        ctx = current_app.app_context()
-        ctx.push()
-        try:
-            # Send updated title if this was the first message
-            if len(user_messages) == 1:
-                yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
+        # Send updated title if this was the first message
+        if len(user_messages) == 1:
+            yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
 
-            tools = TOOLS if tools_on else None
+        tools = TOOLS if tools_on else None
 
-            def execute_tool_fn(fn_name, fn_args, output_dir):
-                result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
-                return result
+        def execute_tool_fn(fn_name, fn_args, output_dir):
+            result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+            return result
 
-            # Use the extracted chat service
-            events = run_chat_turn(
-                client=client,
-                model_id=model_id,
-                messages=history,
-                tools=tools,
-                tool_choice="auto" if tools_on else None,
-                max_iterations=25,
-                execute_tool_fn=execute_tool_fn,
-                output_dir=output_dir,
-            )
+        # Use the extracted chat service
+        events = run_chat_turn(
+            client=client,
+            model_id=model_id,
+            messages=history,
+            tools=tools,
+            tool_choice="auto" if tools_on else None,
+            max_iterations=25,
+            execute_tool_fn=execute_tool_fn,
+            output_dir=output_dir,
+        )
 
-            # Process events and persist messages
-            pending_tool_calls = None
-            pending_assistant_content = ""
+        # Process events and persist messages
+        pending_tool_calls = None
+        pending_assistant_content = ""
 
-            for event in events:
-                if event["type"] == "token":
-                    yield sse_event(event)
+        for event in events:
+            if event["type"] == "token":
+                yield sse_event(event)
 
-                elif event["type"] == "assistant_message":
-                    pending_assistant_content = event.get("content", "")
-                    if event.get("tool_calls"):
-                        pending_tool_calls = event["tool_calls"]
-                        # Persist assistant message with tool calls
-                        db.add_message(
-                            conv_id,
-                            role="assistant",
-                            content=pending_assistant_content,
-                            tool_calls_json=json.dumps(pending_tool_calls),
-                        )
-                        # Add to history for next iteration
-                        history.append({
-                            "role": "assistant",
-                            "content": pending_assistant_content or None,
-                            "tool_calls": pending_tool_calls,
-                        })
-                    else:
-                        # Plain assistant message
-                        if pending_assistant_content:
-                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
-                        yield sse_event({"type": "done"})
-                        return
-
-                elif event["type"] == "tool_result":
-                    # The tool was executed by chat_service, we just yield the result
-                    yield sse_event(event)
-
-                elif event["type"] == "tool_message":
-                    # Persist tool result message
+            elif event["type"] == "assistant_message":
+                pending_assistant_content = event.get("content", "")
+                if event.get("tool_calls"):
+                    pending_tool_calls = event["tool_calls"]
+                    # Persist assistant message with tool calls
                     db.add_message(
                         conv_id,
-                        role="tool",
-                        content=event["content"],
-                        tool_call_id=event["tool_call_id"],
+                        role="assistant",
+                        content=pending_assistant_content,
+                        tool_calls_json=json.dumps(pending_tool_calls),
                     )
+                    # Add to history for next iteration
                     history.append({
-                        "role": "tool",
-                        "tool_call_id": event["tool_call_id"],
-                        "content": event["content"],
+                        "role": "assistant",
+                        "content": pending_assistant_content or None,
+                        "tool_calls": pending_tool_calls,
                     })
-
-                elif event["type"] == "error":
-                    yield sse_event(event)
+                else:
+                    # Plain assistant message
+                    if pending_assistant_content:
+                        db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                    yield sse_event({"type": "done"})
                     return
 
-                elif event["type"] == "done":
-                    yield sse_event(event)
-                    return
+            elif event["type"] == "tool_result":
+                # The tool was executed by chat_service, we just yield the result
+                yield sse_event(event)
 
-        finally:
-            ctx.pop()
+            elif event["type"] == "tool_message":
+                # Persist tool result message
+                db.add_message(
+                    conv_id,
+                    role="tool",
+                    content=event["content"],
+                    tool_call_id=event["tool_call_id"],
+                )
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": event["tool_call_id"],
+                    "content": event["content"],
+                })
 
-    return Response(generate(), mimetype="text/event-stream",
+            elif event["type"] == "error":
+                yield sse_event(event)
+                return
+
+            elif event["type"] == "done":
+                yield sse_event(event)
+                return
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
@@ -611,81 +605,75 @@ def regenerate(conv_id):
     client = get_client(endpoint)
 
     def generate():
-        ctx = current_app.app_context()
-        ctx.push()
-        try:
-            tools = TOOLS if tools_on else None
+        tools = TOOLS if tools_on else None
 
-            def execute_tool_fn(fn_name, fn_args, output_dir):
-                result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
-                return result
+        def execute_tool_fn(fn_name, fn_args, output_dir):
+            result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+            return result
 
-            events = run_chat_turn(
-                client=client,
-                model_id=model_id,
-                messages=history,
-                tools=tools,
-                tool_choice="auto" if tools_on else None,
-                max_iterations=25,
-                execute_tool_fn=execute_tool_fn,
-                output_dir=output_dir,
-            )
+        events = run_chat_turn(
+            client=client,
+            model_id=model_id,
+            messages=history,
+            tools=tools,
+            tool_choice="auto" if tools_on else None,
+            max_iterations=25,
+            execute_tool_fn=execute_tool_fn,
+            output_dir=output_dir,
+        )
 
-            pending_assistant_content = ""
+        pending_assistant_content = ""
 
-            for event in events:
-                if event["type"] == "token":
-                    yield sse_event(event)
+        for event in events:
+            if event["type"] == "token":
+                yield sse_event(event)
 
-                elif event["type"] == "assistant_message":
-                    pending_assistant_content = event.get("content", "")
-                    if event.get("tool_calls"):
-                        # Persist assistant message with tool calls
-                        db.add_message(
-                            conv_id,
-                            role="assistant",
-                            content=pending_assistant_content,
-                            tool_calls_json=json.dumps(event["tool_calls"]),
-                        )
-                        history.append({
-                            "role": "assistant",
-                            "content": pending_assistant_content or None,
-                            "tool_calls": event["tool_calls"],
-                        })
-                    else:
-                        if pending_assistant_content:
-                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
-                        yield sse_event({"type": "done"})
-                        return
-
-                elif event["type"] == "tool_result":
-                    yield sse_event(event)
-
-                elif event["type"] == "tool_message":
+            elif event["type"] == "assistant_message":
+                pending_assistant_content = event.get("content", "")
+                if event.get("tool_calls"):
+                    # Persist assistant message with tool calls
                     db.add_message(
                         conv_id,
-                        role="tool",
-                        content=event["content"],
-                        tool_call_id=event["tool_call_id"],
+                        role="assistant",
+                        content=pending_assistant_content,
+                        tool_calls_json=json.dumps(event["tool_calls"]),
                     )
                     history.append({
-                        "role": "tool",
-                        "tool_call_id": event["tool_call_id"],
-                        "content": event["content"],
+                        "role": "assistant",
+                        "content": pending_assistant_content or None,
+                        "tool_calls": event["tool_calls"],
                     })
-
-                elif event["type"] == "error":
-                    yield sse_event(event)
+                else:
+                    if pending_assistant_content:
+                        db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                    yield sse_event({"type": "done"})
                     return
 
-                elif event["type"] == "done":
-                    yield sse_event(event)
-                    return
+            elif event["type"] == "tool_result":
+                yield sse_event(event)
 
-        finally:
-            ctx.pop()
+            elif event["type"] == "tool_message":
+                db.add_message(
+                    conv_id,
+                    role="tool",
+                    content=event["content"],
+                    tool_call_id=event["tool_call_id"],
+                )
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": event["tool_call_id"],
+                    "content": event["content"],
+                })
 
-    return Response(generate(), mimetype="text/event-stream",
+            elif event["type"] == "error":
+                yield sse_event(event)
+                return
+
+            elif event["type"] == "done":
+                yield sse_event(event)
+                return
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
