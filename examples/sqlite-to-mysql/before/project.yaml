@@ -1,0 +1,88 @@
+template_id: sdlc
+workspace_dir: /tmp/sqlite-to-mysql-before
+propagation_mode: propose
+next_req_seq: 3
+
+# ── Requirements ──
+
+BA-REQ:
+  rel_path: Requirements/BA-REQ.md
+  role: Business Analyst
+  version: 2
+  origin: human
+  derives_from: []
+
+# ── Design ──
+
+UX-WIRE:
+  rel_path: Design/UX-WIRE.md
+  role: UX Designer
+  version: 1
+  origin: propagation
+  derives_from:
+    - artifact: BA-REQ
+      version: 2
+      requirements: [REQ-001, REQ-002]
+
+# ── Data ──
+
+DB-MODEL:
+  rel_path: Data/DB-MODEL.md
+  role: Database Developer
+  version: 1
+  origin: propagation
+  derives_from:
+    - artifact: BA-REQ
+      version: 2
+      requirements: [REQ-001, REQ-002]
+
+# ── Test Cases ──
+
+QA-PLAN:
+  rel_path: Test Cases/QA-PLAN.md
+  role: QA/Tester
+  version: 1
+  origin: propagation
+  derives_from:
+    - artifact: BA-REQ
+      version: 2
+      requirements: [REQ-001, REQ-002]
+    - artifact: DB-MODEL
+      version: 1
+      requirements: [REQ-001, REQ-002]
+
+# ── Security ──
+
+SEC-RISK:
+  rel_path: Security/SEC-RISK.md
+  role: Security Analyst
+  version: 1
+  origin: propagation
+  derives_from:
+    - artifact: BA-REQ
+      version: 2
+      requirements: [REQ-001, REQ-002]
+    - artifact: DB-MODEL
+      version: 1
+      requirements: [REQ-001, REQ-002]
+
+# ── Project Plan ──
+
+PM-PLAN:
+  rel_path: Project Plan/PM-PLAN.md
+  role: Project Manager
+  version: 1
+  origin: propagation
+  derives_from:
+    - artifact: UX-WIRE
+      version: 1
+      requirements: [REQ-001]
+    - artifact: DB-MODEL
+      version: 1
+      requirements: [REQ-001, REQ-002]
+    - artifact: QA-PLAN
+      version: 1
+      requirements: [REQ-001, REQ-002]
+    - artifact: SEC-RISK
+      version: 1
+      requirements: [REQ-001, REQ-002]

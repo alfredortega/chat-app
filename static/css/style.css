@@ -721,3 +721,115 @@ body {
   display: inline-block;
   vertical-align: middle;
 }
+
+/* ── Project panel (Phase 5) ─────────────────────────────────────────────── */
+
+.project-panel {
+  padding: 0.5rem;
+}
+
+.project-role-group {
+  margin-bottom: 0.75rem;
+}
+
+.project-role-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.project-role-name {
+  color: var(--app-text, inherit);
+}
+
+.project-artifact-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.project-artifact-key {
+  font-family: var(--bs-font-monospace, monospace);
+  min-width: 9ch;
+}
+
+.project-change-row,
+.project-issue-row,
+.project-request-row {
+  font-size: 0.875rem;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+}
+
+.project-change-id {
+  font-family: var(--bs-font-monospace, monospace);
+}
+
+.project-summary .badge {
+  font-size: 0.72rem;
+}
+
+.status-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.status-current     { background: rgba(40, 167, 69, 0.18);  color: #2caf54; }
+.status-stale       { background: rgba(255, 193, 7, 0.2);   color: #d4a017; }
+.status-updating    { background: rgba(13, 110, 253, 0.18); color: #4a9eff; }
+.status-conflict    { background: rgba(220, 53, 69, 0.2);   color: #e35d6a; }
+.status-needs-review{ background: rgba(255, 145, 0, 0.2);   color: #e08a2e; }
+.status-blocked     { background: rgba(108, 117, 125, 0.2); color: #9aa3ad; }
+
+.issue-blocking    { color: #e35d6a; font-weight: 600; }
+.issue-assumption  { color: #d4a017; font-weight: 600; }
+
+/* ── Diff view (C24) ─────────────────────────────────────────────────────── */
+
+.diff-view {
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 0.8rem;
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: 6px;
+}
+
+.diff-title {
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+
+.diff-header {
+  background: rgba(127, 127, 127, 0.18);
+  padding: 0.15rem 0.5rem;
+  font-weight: 600;
+}
+
+.diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0 0.5rem;
+}
+
+.diff-add { background: rgba(40, 167, 69, 0.14); }
+.diff-del { background: rgba(220, 53, 69, 0.14); }
+
+/* Project folder badge (C26) */
+.folder-project-badge {
+  font-size: 0.62rem;
+  margin-left: 5px;
+  vertical-align: middle;
+  background: rgba(13, 110, 253, 0.2);
+  color: #4a9eff;
+  border-radius: 4px;
+  padding: 1px 5px;
+}

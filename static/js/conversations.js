@@ -137,17 +137,19 @@ const Conversations = {
       folderEl.dataset.folderId = folder.id;
 
       const archivedBadge = folder.archived ? ` <span class="archived-badge">Archived</span>` : "";
+      const projectBadge  = folder.kind === "project" ? ` <span class="folder-project-badge">Project</span>` : "";
 
       folderEl.innerHTML = `
         <div class="folder-header d-flex align-items-center gap-1 px-2 py-1" style="cursor:pointer">
           <i class="bi bi-chevron-${collapsed ? "right" : "down"} text-secondary flex-shrink-0" style="font-size:0.7rem"></i>
           <i class="bi bi-folder${collapsed ? "" : "-open"} text-warning flex-shrink-0" style="font-size:0.85rem"></i>
-          <span class="folder-title flex-grow-1 text-truncate small fw-semibold" title="${_esc(folder.name)}">${_esc(folder.name)}${archivedBadge}</span>
+          <span class="folder-title flex-grow-1 text-truncate small fw-semibold" title="${_esc(folder.name)}">${_esc(folder.name)}${projectBadge}${archivedBadge}</span>
           <span class="folder-count text-secondary" style="font-size:0.7rem">${folderConvs.length}</span>
           <span class="folder-actions d-none gap-1">
             <button class="btn-folder-new-chat" title="New chat in this folder"><i class="bi bi-plus-lg"></i></button>
             <button class="btn-folder-rename" title="Rename folder"><i class="bi bi-pencil"></i></button>
             <button class="btn-folder-export" title="Export folder as ZIP"><i class="bi bi-box-arrow-up"></i></button>
+            ${folder.kind === "project" ? `<button class="btn-folder-project-panel" title="Open project panel"><i class="bi bi-grid"></i></button>` : ""}
             <button class="btn-folder-archive" title="${folder.archived ? "Unarchive folder" : "Archive folder"}"><i class="bi bi-${folder.archived ? "box-arrow-up" : "archive"}"></i></button>
             <button class="btn-folder-delete text-danger" title="Delete folder"><i class="bi bi-trash"></i></button>
           </span>

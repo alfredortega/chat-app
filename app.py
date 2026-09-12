@@ -23,9 +23,10 @@ def load_dotenv():
                     val = val.strip().strip("'\"")
                     os.environ[key] = val
 
-load_dotenv()
+# Do not load dotenv automatically at import time to prevent side effects in tests
+# load_dotenv()
 
-from flask import Flask, g, jsonify, request, Response, send_from_directory, send_file
+from flask import Flask, g, jsonify, request, Response, send_from_directory, send_file, Blueprint, current_app
 from flask_cors import CORS
 from openai import OpenAI
 
@@ -36,18 +37,56 @@ from file_handler import (
     build_file_context, build_linked_folder_context,
     scan_linked_folder, WARN_THRESHOLD,
 )
+from chat_service import run_chat_turn, sse_stream
 
-app = Flask(__name__, static_folder="static", static_url_path="")
-CORS(app)
+def create_app(config=None):
+    """Application factory for creating the Flask app."""
+    if not os.environ.get("SKIP_DOTENV") == "1":
+        load_dotenv()
+        db.load_dotenv()
 
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
-    "DATABASE_URL",
-    f"sqlite:///{db.DB_PATH}"
-)
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    if config:
+        if "ENCRYPTION_KEY" in config:
+            os.environ["ENCRYPTION_KEY"] = config["ENCRYPTION_KEY"]
+        if "SKIP_DOTENV_WRITE" in config:
+            os.environ["SKIP_DOTENV_WRITE"] = config["SKIP_DOTENV_WRITE"]
 
-db.db.init_app(app)
-db.init_db(app)
+    app_inst = Flask(__name__, static_folder="static", static_url_path="")
+    CORS(app_inst)
+
+    db_uri = None
+    if config and "SQLALCHEMY_DATABASE_URI" in config:
+        db_uri = config["SQLALCHEMY_DATABASE_URI"]
+    else:
+        db_uri = os.environ.get(
+            "DATABASE_URL",
+            f"sqlite:///{db.DB_PATH}"
+        )
+
+    app_inst.config["SQLALCHEMY_DATABASE_URI"] = db_uri
+    app_inst.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    db.db.init_app(app_inst)
+    db.init_db(app_inst)
+
+    app_inst.register_blueprint(app)
+
+    # Phase 4: project blueprint.
+    from routes.projects import projects_bp
+    app_inst.register_blueprint(projects_bp)
+
+    # Phase 4 (C20): worker startup wiring. Starts exactly one daemon worker
+    # thread through the application factory.
+    if config and config.get("START_PROPAGATION_WORKER"):
+        from propagation.worker import PropagationWorker, should_start_worker
+        if should_start_worker():
+            worker = PropagationWorker(app_inst)
+            worker.start()
+            app_inst.config["PROPAGATION_WORKER"] = worker
+
+    return app_inst
+
+app = Blueprint("legacy", __name__)
 
 
 def get_client(endpoint: dict = None) -> OpenAI:
@@ -107,7 +146,7 @@ def _endpoint_for_conversation(conv: dict) -> dict | None:
 
 @app.route("/")
 def index():
-    return send_from_directory(app.static_folder, "index.html")
+    return send_from_directory(current_app.static_folder, "index.html")
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -425,145 +464,116 @@ def chat(conv_id):
         db.update_conversation(conv_id, title=auto_title)
 
     # Fix #10: resolve endpoint once; reuse for both model_id fallback and client
-    endpoint   = _endpoint_for_conversation(conv)
-    model_id   = conv["model_id"] or (endpoint or {}).get("default_model") or ""
+    endpoint = _endpoint_for_conversation(conv)
+    model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
+
+    base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+    tools_on = _tools_enabled(conv)
+    system_prompt = {"role": "system", "content": base_system}
+
+    # Fix #3: reuse already-fetched messages for API history (no second DB query)
+    history = [system_prompt] + _build_api_messages(messages_so_far)
+
+    client = get_client(endpoint)
+
+    def execute_and_persist_tool(fn_name, fn_args, output_dir):
+        """Execute tool and persist result to database."""
+        result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+
+        # Persist tool result
+        db.add_message(
+            conv_id,
+            role="tool",
+            content=result["result"],
+            tool_call_id=tool_call_id,
+        )
+        return result
 
     def generate():
         """Stream SSE events back to the browser."""
-        ctx = app.app_context()
+        ctx = current_app.app_context()
         ctx.push()
         try:
             # Send updated title if this was the first message
             if len(user_messages) == 1:
-                title_event = json.dumps({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
-                yield f"data: {title_event}\n\n"
+                yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
 
-            base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
-            tools_on = _tools_enabled(conv)
-            system_prompt = {"role": "system", "content": base_system}
+            tools = TOOLS if tools_on else None
 
-            # Fix #3: reuse already-fetched messages for API history (no second DB query)
-            history = [system_prompt] + _build_api_messages(messages_so_far)
+            def execute_tool_fn(fn_name, fn_args, output_dir):
+                result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+                return result
 
-            client = get_client(endpoint)
+            # Use the extracted chat service
+            events = run_chat_turn(
+                client=client,
+                model_id=model_id,
+                messages=history,
+                tools=tools,
+                tool_choice="auto" if tools_on else None,
+                max_iterations=25,
+                execute_tool_fn=execute_tool_fn,
+                output_dir=output_dir,
+            )
 
-            # We loop only when the model issues tool calls; plain replies exit immediately.
-            while True:
-                try:
-                    create_kwargs = {
-                        "model": model_id,
-                        "messages": history,
-                        "stream": True,
-                    }
-                    if tools_on:
-                        create_kwargs["tools"] = TOOLS
-                        create_kwargs["tool_choice"] = "auto"
-                    stream = client.chat.completions.create(**create_kwargs)
-                except Exception as exc:
-                    err = json.dumps({"type": "error", "message": str(exc)})
-                    yield f"data: {err}\n\n"
-                    return
+            # Process events and persist messages
+            pending_tool_calls = None
+            pending_assistant_content = ""
 
-                # Accumulate the full streamed response before deciding what to do
-                assistant_content = ""
-                tool_calls_accum = {}   # index -> {id, name, arguments}
-                final_finish_reason = None
+            for event in events:
+                if event["type"] == "token":
+                    yield sse_event(event)
 
-                for chunk in stream:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if choice is None:
-                        continue
-
-                    delta = choice.delta
-
-                    # Stream text tokens to the browser as they arrive
-                    if delta.content is not None:
-                        assistant_content += delta.content
-                        if delta.content:   # don't send empty string tokens
-                            token_event = json.dumps({"type": "token", "content": delta.content})
-                            yield f"data: {token_event}\n\n"
-
-                    # Accumulate tool-call fragments
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in tool_calls_accum:
-                                tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                            if tc.id:
-                                tool_calls_accum[idx]["id"] = tc.id
-                            if tc.function and tc.function.name:
-                                tool_calls_accum[idx]["name"] = tc.function.name
-                            if tc.function and tc.function.arguments:
-                                tool_calls_accum[idx]["arguments"] += tc.function.arguments
-
-                    # Capture the finish reason (arrives on the last chunk)
-                    if choice.finish_reason is not None:
-                        final_finish_reason = choice.finish_reason
-
-                # ── Tool-call branch ──────────────────────────────────────────────
-                if tool_calls_accum:
-                    tc_list = [
-                        {
-                            "id": v["id"],
-                            "type": "function",
-                            "function": {"name": v["name"], "arguments": v["arguments"]},
-                        }
-                        for v in tool_calls_accum.values()
-                    ]
-
-                    # Persist the assistant's tool-call message
-                    db.add_message(
-                        conv_id,
-                        role="assistant",
-                        content=assistant_content,
-                        tool_calls_json=json.dumps(tc_list),
-                    )
-                    history.append({
-                        "role": "assistant",
-                        "content": assistant_content or None,
-                        "tool_calls": tc_list,
-                    })
-
-                    # Execute each tool and feed the results back into history
-                    for tc in tc_list:
-                        fn_name = tc["function"]["name"]
-                        fn_args = tc["function"]["arguments"]
-                        tool_call_id = tc["id"]
-
-                        result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
-
-                        # Notify the browser
-                        tool_event = json.dumps({
-                            "type": "tool_result",
-                            "success": result["success"],
-                            "display": result["display"],
-                            "blocked_url": result.get("blocked_url"),
-                        })
-                        yield f"data: {tool_event}\n\n"
-
-                        # Persist tool result and add to history
+                elif event["type"] == "assistant_message":
+                    pending_assistant_content = event.get("content", "")
+                    if event.get("tool_calls"):
+                        pending_tool_calls = event["tool_calls"]
+                        # Persist assistant message with tool calls
                         db.add_message(
                             conv_id,
-                            role="tool",
-                            content=result["result"],
-                            tool_call_id=tool_call_id,
+                            role="assistant",
+                            content=pending_assistant_content,
+                            tool_calls_json=json.dumps(pending_tool_calls),
                         )
+                        # Add to history for next iteration
                         history.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": result["result"],
+                            "role": "assistant",
+                            "content": pending_assistant_content or None,
+                            "tool_calls": pending_tool_calls,
                         })
+                    else:
+                        # Plain assistant message
+                        if pending_assistant_content:
+                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                        yield sse_event({"type": "done"})
+                        return
 
-                    # Let the model continue after receiving the tool results
-                    continue
+                elif event["type"] == "tool_result":
+                    # The tool was executed by chat_service, we just yield the result
+                    yield sse_event(event)
 
-                # ── Plain text branch ─────────────────────────────────────────────
-                else:
-                    if assistant_content:
-                        db.add_message(conv_id, role="assistant", content=assistant_content)
-                    done_event = json.dumps({"type": "done"})
-                    yield f"data: {done_event}\n\n"
+                elif event["type"] == "tool_message":
+                    # Persist tool result message
+                    db.add_message(
+                        conv_id,
+                        role="tool",
+                        content=event["content"],
+                        tool_call_id=event["tool_call_id"],
+                    )
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": event["tool_call_id"],
+                        "content": event["content"],
+                    })
+
+                elif event["type"] == "error":
+                    yield sse_event(event)
                     return
+
+                elif event["type"] == "done":
+                    yield sse_event(event)
+                    return
+
         finally:
             ctx.pop()
 
@@ -595,68 +605,83 @@ def regenerate(conv_id):
     endpoint = _endpoint_for_conversation(conv)
     model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
+    base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+    tools_on = _tools_enabled(conv)
+    history = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
+    client = get_client(endpoint)
+
     def generate():
-        ctx = app.app_context()
+        ctx = current_app.app_context()
         ctx.push()
         try:
-            # Fix #1: delegate to shared helpers instead of duplicating the logic
-            base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
-            tools_on = _tools_enabled(conv)
-            history  = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
-            client   = get_client(endpoint)
+            tools = TOOLS if tools_on else None
 
-            while True:
-                try:
-                    create_kwargs = {"model": model_id, "messages": history, "stream": True}
-                    if tools_on:
-                        create_kwargs["tools"] = TOOLS
-                        create_kwargs["tool_choice"] = "auto"
-                    stream = client.chat.completions.create(**create_kwargs)
-                except Exception as exc:
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            def execute_tool_fn(fn_name, fn_args, output_dir):
+                result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+                return result
+
+            events = run_chat_turn(
+                client=client,
+                model_id=model_id,
+                messages=history,
+                tools=tools,
+                tool_choice="auto" if tools_on else None,
+                max_iterations=25,
+                execute_tool_fn=execute_tool_fn,
+                output_dir=output_dir,
+            )
+
+            pending_assistant_content = ""
+
+            for event in events:
+                if event["type"] == "token":
+                    yield sse_event(event)
+
+                elif event["type"] == "assistant_message":
+                    pending_assistant_content = event.get("content", "")
+                    if event.get("tool_calls"):
+                        # Persist assistant message with tool calls
+                        db.add_message(
+                            conv_id,
+                            role="assistant",
+                            content=pending_assistant_content,
+                            tool_calls_json=json.dumps(event["tool_calls"]),
+                        )
+                        history.append({
+                            "role": "assistant",
+                            "content": pending_assistant_content or None,
+                            "tool_calls": event["tool_calls"],
+                        })
+                    else:
+                        if pending_assistant_content:
+                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                        yield sse_event({"type": "done"})
+                        return
+
+                elif event["type"] == "tool_result":
+                    yield sse_event(event)
+
+                elif event["type"] == "tool_message":
+                    db.add_message(
+                        conv_id,
+                        role="tool",
+                        content=event["content"],
+                        tool_call_id=event["tool_call_id"],
+                    )
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": event["tool_call_id"],
+                        "content": event["content"],
+                    })
+
+                elif event["type"] == "error":
+                    yield sse_event(event)
                     return
 
-                assistant_content = ""
-                tool_calls_accum  = {}
-                for chunk in stream:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if not choice:
-                        continue
-                    delta = choice.delta
-                    if delta.content is not None:
-                        assistant_content += delta.content
-                        if delta.content:
-                            yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in tool_calls_accum:
-                                tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                            if tc.id:
-                                tool_calls_accum[idx]["id"] = tc.id
-                            if tc.function and tc.function.name:
-                                tool_calls_accum[idx]["name"] = tc.function.name
-                            if tc.function and tc.function.arguments:
-                                tool_calls_accum[idx]["arguments"] += tc.function.arguments
-
-                if tool_calls_accum:
-                    tc_list = [
-                        {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
-                        for v in tool_calls_accum.values()
-                    ]
-                    db.add_message(conv_id, "assistant", assistant_content, tool_calls_json=json.dumps(tc_list))
-                    history.append({"role": "assistant", "content": assistant_content or None, "tool_calls": tc_list})
-                    for tc in tc_list:
-                        result = execute_tool_call(tc["function"]["name"], tc["function"]["arguments"], output_dir=output_dir)
-                        yield f"data: {json.dumps({'type': 'tool_result', 'success': result['success'], 'display': result['display'], 'blocked_url': result.get('blocked_url')})}\n\n"
-                        db.add_message(conv_id, "tool", result["result"], tool_call_id=tc["id"])
-                        history.append({"role": "tool", "tool_call_id": tc["id"], "content": result["result"]})
-                    continue
-                else:
-                    if assistant_content:
-                        db.add_message(conv_id, "assistant", assistant_content)
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                elif event["type"] == "done":
+                    yield sse_event(event)
                     return
+
         finally:
             ctx.pop()
 
@@ -1366,4 +1391,5 @@ def _build_api_messages(rows: list[dict]) -> list[dict]:
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app_to_run = create_app()
+    app_to_run.run(debug=True, port=5000)

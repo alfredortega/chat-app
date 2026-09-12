@@ -381,4 +381,163 @@ const API = {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
+
+  // ── Propagation ─────────────────────────────────────────────────────────────
+
+  async listProjects() {
+    const res = await fetch("/api/projects");
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createProject(data) {
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectArtifacts(id) {
+    const res = await fetch(`/api/projects/${id}/artifacts`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectChanges(id) {
+    const res = await fetch(`/api/projects/${id}/changes`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectProposals(id, changeId) {
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/proposals`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectIssues(id, params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`/api/projects/${id}/issues${qs ? "?" + qs : ""}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectAssumptions(id) {
+    const res = await fetch(`/api/projects/${id}/assumptions`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getProjectSettings(id) {
+    const res = await fetch(`/api/projects/${id}/settings`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async scanProject(id) {
+    const res = await fetch(`/api/projects/${id}/scan`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async propagateChange(id, changeId) {
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/propagate`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async applyProposal(id, jobId) {
+    const res = await fetch(`/api/projects/${id}/proposals/${jobId}/apply`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async rejectProposal(id, jobId) {
+    const res = await fetch(`/api/projects/${id}/proposals/${jobId}/reject`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async applyAll(id, changeId) {
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/apply-all`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async rollbackChange(id, changeId) {
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/rollback`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async answerIssue(id, issueId, data) {
+    const res = await fetch(`/api/projects/${id}/issues/${issueId}/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async dismissIssue(id, issueId, data) {
+    const res = await fetch(`/api/projects/${id}/issues/${issueId}/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createArtifactRequest(id, data) {
+    const res = await fetch(`/api/projects/${id}/artifact-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listArtifactRequests(id) {
+    const res = await fetch(`/api/projects/${id}/artifact-requests`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async approveArtifactRequest(id, requestId) {
+    const res = await fetch(`/api/projects/${id}/artifact-requests/${requestId}/approve`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async rejectArtifactRequest(id, requestId) {
+    const res = await fetch(`/api/projects/${id}/artifact-requests/${requestId}/reject`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async updateProjectSettings(id, data) {
+    const res = await fetch(`/api/projects/${id}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async setBaConversation(id, conversationId) {
+    const res = await fetch(`/api/projects/${id}/ba-conversation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: conversationId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
 };

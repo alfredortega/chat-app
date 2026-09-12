@@ -1,6 +1,7 @@
 """
 Tool definitions and execution for function-calling.
-Tools: write_file, read_file, list_directory, run_python
+Tools: write_file, read_file, list_directory, run_python, write_artifact,
+read_artifact, list_artifacts, ask_question, raise_issue, propose_artifact
 """
 
 import os
@@ -144,9 +145,227 @@ TOOLS = [
 ]
 
 
+PROPAGATION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_artifact",
+            "description": (
+                "Read the content of a registered project artifact by its key. "
+                "Artifacts are versioned documents in the project workspace (e.g., "
+                "requirements, design docs, test plans). Use this to reference "
+                "upstream artifacts when working on downstream deliverables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_key": {
+                        "type": "string",
+                        "description": "The unique key of the artifact to read (e.g., 'BA-REQ', 'DB-MODEL')."
+                    },
+                },
+                "required": ["artifact_key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_artifact",
+            "description": (
+                "Write or update a project artifact in the workspace. "
+                "Only permitted subdirectories under the workspace root are allowed. "
+                "Path traversal (..) is rejected. The artifact_key must be registered "
+                "in the project's artifact index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_key": {
+                        "type": "string",
+                        "description": "The unique key of the artifact (e.g., 'DB-MODEL', 'QA-PLAN')."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full text content to write to the artifact file.",
+                    },
+                },
+                "required": ["artifact_key", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_artifacts",
+            "description": (
+                "List all registered artifacts in the project with their keys, "
+                "titles, and current versions. Use this to discover what artifacts "
+                "exist before reading or writing them."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_question",
+            "description": (
+                "Ask a clarifying question to the Business Analyst about a requirement. "
+                "The question is routed to the BA's conversation inbox. If marked "
+                "blocking, the current artifact regeneration pauses until answered. "
+                "If non-blocking, an inline assumption marker is inserted and work continues."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "requirement_id": {
+                        "type": "string",
+                        "description": "The REQ-nnn identifier the question relates to."
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "The clarifying question to ask the Business Analyst."
+                    },
+                    "blocking": {
+                        "type": "boolean",
+                        "description": "Whether this question blocks further work (true) or can be assumed (false). Default: false.",
+                        "default": False,
+                    },
+                },
+                "required": ["requirement_id", "question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "raise_issue",
+            "description": (
+                "Raise a non-blocking issue or observation about an artifact. "
+                "Issues are recorded for review but do not pause propagation. "
+                "Use for concerns that don't require immediate clarification."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_key": {
+                        "type": "string",
+                        "description": "The artifact key the issue relates to."
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                        "description": "Issue severity level.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Description of the issue.",
+                    },
+                },
+                "required": ["artifact_key", "severity", "message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_artifact",
+            "description": (
+                "Propose a new artifact that doesn't exist in the current project template. "
+                "Requires approval before being added to the artifact registry. "
+                "Use when a role discovers a need for a new deliverable type."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "description": "The persona role proposing the artifact (e.g., 'UX', 'QA', 'SEC')."
+                    },
+                    "artifact_key": {
+                        "type": "string",
+                        "description": "Proposed unique key for the new artifact."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Human-readable title for the artifact."
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Why this artifact is needed."
+                    },
+                },
+                "required": ["role", "artifact_key", "title", "rationale"],
+            },
+        },
+    },
+]
+
+
+ALLOWED_ARTIFACT_SUBDIRS = {
+    "Requirements",
+    "Design",
+    "Data",
+    "Test Cases",
+    "Security",
+    "Project Plan",
+    ".agents",
+    ".agents/changes",
+    ".agents/proposals",
+}
+
+ARTIFACT_PREFIX_TO_SUBDIR = {
+    "BA": "Requirements",
+    "UX": "Design",
+    "DB": "Data",
+    "QA": "Test Cases",
+    "SEC": "Security",
+    "PM": "Project Plan",
+}
+
+
+PROFILE_TOOL_MAP = {
+    "chat": [t["function"]["name"] for t in TOOLS],
+    "propagation": [t["function"]["name"] for t in PROPAGATION_TOOLS],
+}
+
+
+def build_tools(context: str) -> list[dict]:
+    """
+    Return the tool definitions for the given context/profile.
+
+    Args:
+        context: Profile name - "chat" (default) or "propagation"
+
+    Returns:
+        List of tool definition dicts compatible with OpenAI function-calling API.
+    """
+    if context == "propagation":
+        return PROPAGATION_TOOLS
+    return TOOLS
+
+
+def _is_tool_allowed_for_context(tool_name: str, context: str) -> bool:
+    """Check if a tool is allowed in the given context/profile."""
+    allowed = PROFILE_TOOL_MAP.get(context, [])
+    return tool_name in allowed
+
+
 # ── Tool execution ─────────────────────────────────────────────────────────────
 
-def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) -> dict:
+def execute_tool_call(
+    name: str,
+    arguments_json: str,
+    output_dir: str = None,
+    context: str = "chat",
+    workspace_dir: str = None,
+    project_id: int = None,
+) -> dict:
     """
     Execute a named tool call.
 
@@ -154,6 +373,14 @@ def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) ->
     conversation (conversation override → app default, already resolved by
     the caller).  When supplied it takes precedence over the DB setting so
     that per-conversation output directories are honoured.
+
+    ``context`` is the tool profile: "chat" (default) or "propagation".
+    Tools not in the active profile are rejected.
+
+    ``workspace_dir`` is the project workspace root for propagation-context
+    tools (e.g., write_artifact). Required when context="propagation".
+
+    ``project_id`` is the project (folder) ID for artifact registration checks.
     """
     try:
         args = json.loads(arguments_json)
@@ -162,6 +389,13 @@ def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) ->
             "success": False,
             "result": f"Invalid arguments JSON: {exc}",
             "display": "❌ Tool call failed — could not parse arguments.",
+        }
+
+    if not _is_tool_allowed_for_context(name, context):
+        return {
+            "success": False,
+            "result": f"Tool '{name}' is not available in '{context}' context.",
+            "display": f"❌ Tool '{name}' not permitted in {context} mode.",
         }
 
     if name == "write_file":
@@ -174,11 +408,187 @@ def execute_tool_call(name: str, arguments_json: str, output_dir: str = None) ->
         return _list_directory(args)
     if name == "run_python":
         return _run_python(args)
+    if name == "write_artifact":
+        return _write_artifact(args, workspace_dir=workspace_dir, project_id=project_id)
+    if name == "read_artifact":
+        return _read_artifact(args, workspace_dir=workspace_dir)
+    if name == "list_artifacts":
+        return _list_artifacts(args, workspace_dir=workspace_dir)
+    if name == "ask_question":
+        return _ask_question(args, workspace_dir=workspace_dir)
+    if name == "raise_issue":
+        return _raise_issue(args, workspace_dir=workspace_dir)
+    if name == "propose_artifact":
+        return _propose_artifact(args, workspace_dir=workspace_dir)
 
     return {
         "success": False,
         "result": f"Unknown tool: {name}",
         "display": f"❌ Unknown tool '{name}'.",
+    }
+
+
+def _write_artifact(
+    args: dict,
+    workspace_dir: str = None,
+    project_id: int = None,
+) -> dict:
+    """Write an artifact file jailed to the workspace root with allowed subdirs."""
+    artifact_key = args.get("artifact_key", "").strip()
+    content = args.get("content", "")
+
+    if not artifact_key:
+        return {
+            "success": False,
+            "result": "No artifact_key provided.",
+            "display": "❌ Artifact write failed — no artifact_key specified.",
+        }
+
+    if not workspace_dir:
+        return {
+            "success": False,
+            "result": "No workspace_dir configured for propagation context.",
+            "display": "❌ Workspace directory not configured for artifact operations.",
+        }
+
+    workspace_dir = os.path.normpath(os.path.expanduser(workspace_dir))
+
+    if not os.path.isdir(workspace_dir):
+        return {
+            "success": False,
+            "result": f"Workspace directory does not exist: {workspace_dir}",
+            "display": f"❌ Workspace not found: `{workspace_dir}`",
+        }
+
+    if ".." in artifact_key:
+        return {
+            "success": False,
+            "result": "Path traversal denied: artifact_key contains '..'.",
+            "display": "❌ Path traversal denied: artifact_key must not contain '..'.",
+        }
+
+    # Check if artifact_key is registered for this project (C08)
+    if project_id is not None:
+        try:
+            import database as db_module
+            if not db_module.is_artifact_registered(project_id, artifact_key):
+                return {
+                    "success": False,
+                    "result": f"Artifact key '{artifact_key}' is not registered for this project. Use propose_artifact tool to request it.",
+                    "display": f"❌ Unregistered artifact: `{artifact_key}` not in project registry.",
+                }
+        except Exception as exc:
+            # If DB check fails, log but don't block (backward compatibility)
+            pass
+
+    prefix = artifact_key.split("-")[0] if "-" in artifact_key else artifact_key
+    subdir = ARTIFACT_PREFIX_TO_SUBDIR.get(prefix)
+    if not subdir:
+        return {
+            "success": False,
+            "result": f"Artifact key prefix '{prefix}' is not a recognized role prefix.",
+            "display": f"❌ Invalid artifact prefix: `{prefix}` not in {sorted(ARTIFACT_PREFIX_TO_SUBDIR.keys())}.",
+        }
+    if subdir not in ALLOWED_ARTIFACT_SUBDIRS:
+        return {
+            "success": False,
+            "result": f"Artifact key prefix '{prefix}' maps to disallowed subdirectory '{subdir}'.",
+            "display": f"❌ Invalid artifact path: `{subdir}` not in allowed directories.",
+        }
+
+    safe_filename = f"{artifact_key}.md"
+    target_path = os.path.join(workspace_dir, subdir, safe_filename)
+    target_path = os.path.normpath(target_path)
+
+    if not os.path.commonpath([workspace_dir, target_path]) == workspace_dir:
+        return {
+            "success": False,
+            "result": "Path traversal denied: artifact path escapes workspace root.",
+            "display": "❌ Path traversal denied: artifact must be under workspace root.",
+        }
+
+    try:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return {
+            "success": True,
+            "result": f"Artifact written to: {target_path}",
+            "display": f"✅ Artifact saved: `{artifact_key}`",
+        }
+    except OSError as exc:
+        return {
+            "success": False,
+            "result": f"Failed to write artifact: {exc}",
+            "display": f"❌ Artifact write failed: {exc}",
+        }
+
+
+def _read_artifact(args: dict, workspace_dir: str = None) -> dict:
+    """Read an artifact file from the workspace (stub for C04)."""
+    artifact_key = args.get("artifact_key", "").strip()
+
+    if not artifact_key:
+        return {
+            "success": False,
+            "result": "No artifact_key provided.",
+            "display": "❌ Artifact read failed — no artifact_key specified.",
+        }
+
+    if not workspace_dir:
+        return {
+            "success": False,
+            "result": "No workspace_dir configured for propagation context.",
+            "display": "❌ Workspace directory not configured for artifact operations.",
+        }
+
+    return {
+        "success": False,
+        "result": "read_artifact not yet implemented (C08).",
+        "display": "⚠️ read_artifact is declared but not implemented.",
+    }
+
+
+def _list_artifacts(args: dict, workspace_dir: str = None) -> dict:
+    """List registered artifacts (stub for C04)."""
+    if not workspace_dir:
+        return {
+            "success": False,
+            "result": "No workspace_dir configured for propagation context.",
+            "display": "❌ Workspace directory not configured for artifact operations.",
+        }
+
+    return {
+        "success": False,
+        "result": "list_artifacts not yet implemented (C08).",
+        "display": "⚠️ list_artifacts is declared but not implemented.",
+    }
+
+
+def _ask_question(args: dict, workspace_dir: str = None) -> dict:
+    """Ask a clarifying question (stub for C04)."""
+    return {
+        "success": False,
+        "result": "ask_question not yet implemented (C18).",
+        "display": "⚠️ ask_question is declared but not implemented.",
+    }
+
+
+def _raise_issue(args: dict, workspace_dir: str = None) -> dict:
+    """Raise an issue (stub for C04)."""
+    return {
+        "success": False,
+        "result": "raise_issue not yet implemented (C18).",
+        "display": "⚠️ raise_issue is declared but not implemented.",
+    }
+
+
+def _propose_artifact(args: dict, workspace_dir: str = None) -> dict:
+    """Propose a new artifact (stub for C04)."""
+    return {
+        "success": False,
+        "result": "propose_artifact not yet implemented (C18).",
+        "display": "⚠️ propose_artifact is declared but not implemented.",
     }
 
 

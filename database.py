@@ -6,6 +6,7 @@ from cryptography.fernet import Fernet
 import os
 import base64
 import hashlib
+import json
 
 def load_dotenv():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
@@ -83,13 +84,16 @@ def decrypt_val(val: str) -> str:
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     # Only emit PRAGMAs for sqlite connections
-    if type(dbapi_connection).__name__ == "Connection" or "sqlite" in str(type(dbapi_connection)):
-        try:
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-        except Exception:
-            pass
+    if type(dbapi_connection).__module__ != "sqlite3":
+        return
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+    except Exception:
+        pass
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -102,6 +106,13 @@ class Folder(db.Model):
     archived = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.String(50), nullable=False)
     updated_at = db.Column(db.String(50), nullable=False)
+    kind = db.Column(db.String(50), nullable=False, default='folder')
+    workspace_dir = db.Column(db.String(512), nullable=False, default='')
+    template_id = db.Column(db.String(100), nullable=False, default='')
+    propagation_mode = db.Column(db.String(50), nullable=False, default='off')
+    next_req_seq = db.Column(db.Integer, nullable=False, default=1)
+    token_budget = db.Column(db.Integer, nullable=False, default=0)
+    ba_conversation_id = db.Column(db.Integer, nullable=True)
 
     def to_dict(self):
         return {
@@ -110,7 +121,14 @@ class Folder(db.Model):
             "position": self.position,
             "archived": self.archived,
             "created_at": self.created_at,
-            "updated_at": self.updated_at
+            "updated_at": self.updated_at,
+            "kind": getattr(self, "kind", "folder"),
+            "workspace_dir": getattr(self, "workspace_dir", ""),
+            "template_id": getattr(self, "template_id", ""),
+            "propagation_mode": getattr(self, "propagation_mode", "off"),
+            "next_req_seq": getattr(self, "next_req_seq", 1),
+            "token_budget": getattr(self, "token_budget", 0),
+            "ba_conversation_id": getattr(self, "ba_conversation_id", None),
         }
 
 
@@ -282,7 +300,282 @@ class LinkedFolder(db.Model):
         }
 
 
+class Artifact(db.Model):
+    __tablename__ = 'artifacts'
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'artifact_key', name='uq_artifact_project_key'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    artifact_key = db.Column(db.String(100), nullable=False, index=True)
+    role_persona_id = db.Column(db.Integer, db.ForeignKey('personas.id', ondelete='SET NULL'), nullable=True)
+    rel_path = db.Column(db.String(512), nullable=False)
+    version = db.Column(db.Integer, nullable=False, default=1)
+    content_hash = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.String(50), nullable=False, default='current')
+    origin = db.Column(db.String(50), nullable=False, default='human')
+    heading_index = db.Column(db.JSON, nullable=False, default=list)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "artifact_key": self.artifact_key,
+            "role_persona_id": self.role_persona_id,
+            "rel_path": self.rel_path,
+            "version": self.version,
+            "content_hash": self.content_hash,
+            "status": self.status,
+            "origin": self.origin,
+            "heading_index": self.heading_index,
+        }
+
+
+class ArtifactDep(db.Model):
+    __tablename__ = 'artifact_deps'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    upstream_key = db.Column(db.String(100), nullable=False, index=True)
+    downstream_key = db.Column(db.String(100), nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "upstream_key": self.upstream_key,
+            "downstream_key": self.downstream_key,
+        }
+
+
+class ArtifactTrace(db.Model):
+    __tablename__ = 'artifact_traces'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    artifact_key = db.Column(db.String(100), nullable=False, index=True)
+    req_id = db.Column(db.String(50), nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "artifact_key": self.artifact_key,
+            "req_id": self.req_id,
+        }
+
+
+class ChangeEvent(db.Model):
+    __tablename__ = 'change_events'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    source_key = db.Column(db.String(100), nullable=False)
+    from_version = db.Column(db.Integer, nullable=False)
+    to_version = db.Column(db.Integer, nullable=False)
+    summary = db.Column(db.Text, nullable=True)
+    changed_reqs = db.Column(db.Text, nullable=True)
+    removed_reqs = db.Column(db.Text, nullable=True)
+    diff = db.Column(db.Text, nullable=True)
+    origin = db.Column(db.String(50), nullable=False, default='human')
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        import json
+        changed_reqs = self.changed_reqs
+        removed_reqs = self.removed_reqs
+        try:
+            if changed_reqs:
+                changed_reqs = json.loads(changed_reqs)
+        except Exception:
+            pass
+        try:
+            if removed_reqs:
+                removed_reqs = json.loads(removed_reqs)
+        except Exception:
+            pass
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "source_key": self.source_key,
+            "from_version": self.from_version,
+            "to_version": self.to_version,
+            "summary": self.summary,
+            "changed_reqs": changed_reqs,
+            "removed_reqs": removed_reqs,
+            "diff": self.diff,
+            "origin": self.origin,
+            "created_at": self.created_at,
+        }
+
+
+class PropagationJob(db.Model):
+    __tablename__ = 'propagation_jobs'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    change_id = db.Column(db.Integer, db.ForeignKey('change_events.id', ondelete='CASCADE'), nullable=False, index=True)
+    artifact_key = db.Column(db.String(100), nullable=False, index=True)
+    persona_id = db.Column(db.Integer, db.ForeignKey('personas.id', ondelete='SET NULL'), nullable=True)
+    state = db.Column(db.String(50), nullable=False, default='queued')
+    depth = db.Column(db.Integer, nullable=False, default=0)
+    batch_id = db.Column(db.String(100), nullable=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id', ondelete='SET NULL'), nullable=True)
+    tokens_used = db.Column(db.Integer, nullable=False, default=0)
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "change_id": self.change_id,
+            "artifact_key": self.artifact_key,
+            "persona_id": self.persona_id,
+            "state": self.state,
+            "depth": self.depth,
+            "batch_id": self.batch_id,
+            "conversation_id": self.conversation_id,
+            "tokens_used": self.tokens_used,
+            "attempts": self.attempts,
+            "error": self.error,
+            "created_at": self.created_at,
+        }
+
+
+class AgentIssue(db.Model):
+    __tablename__ = 'agent_issues'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    raised_by_key = db.Column(db.String(100), nullable=False, index=True)
+    raised_by_persona_id = db.Column(db.Integer, db.ForeignKey('personas.id', ondelete='SET NULL'), nullable=True)
+    change_id = db.Column(db.Integer, db.ForeignKey('change_events.id', ondelete='SET NULL'), nullable=True)
+    depth = db.Column(db.Integer, nullable=False, default=0)
+    kind = db.Column(db.String(50), nullable=False)  # question / risk / suggestion / conflict
+    req_id = db.Column(db.String(50), nullable=True)
+    blocking = db.Column(db.Integer, nullable=True, default=0)
+    body = db.Column(db.Text, nullable=True)
+    proposed_answer = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(50), nullable=False, default='open')
+    answer = db.Column(db.Text, nullable=True)
+    answered_at = db.Column(db.String(50), nullable=True)
+    stale_context = db.Column(db.Integer, nullable=True, default=0)
+    digest_message_id = db.Column(db.String(100), nullable=True)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "raised_by_key": self.raised_by_key,
+            "raised_by_persona_id": self.raised_by_persona_id,
+            "change_id": self.change_id,
+            "depth": self.depth,
+            "kind": self.kind,
+            "req_id": self.req_id,
+            "blocking": self.blocking,
+            "body": self.body,
+            "proposed_answer": self.proposed_answer,
+            "status": self.status,
+            "answer": self.answer,
+            "answered_at": self.answered_at,
+            "stale_context": self.stale_context,
+            "digest_message_id": self.digest_message_id,
+        }
+
+
+class ArtifactAssumption(db.Model):
+    __tablename__ = 'artifact_assumptions'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    artifact_key = db.Column(db.String(100), nullable=False, index=True)
+    req_id = db.Column(db.String(50), nullable=False)
+    marker_text = db.Column(db.Text, nullable=False)
+    resolved = db.Column(db.Integer, nullable=False, default=0)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "artifact_key": self.artifact_key,
+            "req_id": self.req_id,
+            "marker_text": self.marker_text,
+            "resolved": bool(self.resolved),
+        }
+
+
+class ArtifactRequest(db.Model):
+    __tablename__ = 'artifact_requests'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('folders.id', ondelete='CASCADE'), nullable=False, index=True)
+    persona_id = db.Column(db.Integer, db.ForeignKey('personas.id', ondelete='SET NULL'), nullable=True)
+    artifact_key = db.Column(db.String(100), nullable=False, index=True)
+    rel_path = db.Column(db.String(512), nullable=False)
+    rationale = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(50), nullable=False, default='pending')
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "persona_id": self.persona_id,
+            "artifact_key": self.artifact_key,
+            "rel_path": self.rel_path,
+            "rationale": self.rationale,
+            "status": self.status,
+        }
+
+
 # ── Starter personas ───────────────────────────────────────────────────────────
+
+# Bump this when STARTER_PERSONAS prompts change so existing installs can
+# opt into the latest text via reset_starter_personas() without silently
+# clobbering user-edited prompts (C29).
+STARTER_PERSONAS_VERSION = "2"
+
+
+def reset_starter_personas(force: bool = False) -> dict:
+    """
+    Reset starter personas to the latest seeded text (C29).
+
+    Never clobbers user-edited prompts: a persona whose prompt has been edited
+    is left alone unless ``force`` is True. Unedited seeded personas are
+    recognisable because their ``created_at == updated_at``. Returns the
+    personas updated and skipped.
+    """
+    updated = []
+    skipped = []
+    for name, prompt in STARTER_PERSONAS:
+        persona = Persona.query.filter_by(name=name).first()
+        if not persona:
+            continue
+        if persona.prompt == prompt:
+            continue  # already the latest text
+        if force or persona.created_at == persona.updated_at:
+            persona.prompt = prompt
+            persona.updated_at = _now()
+            db.session.add(persona)
+            updated.append(name)
+        else:
+            skipped.append(name)
+
+    row = db.session.get(Setting, "starter_personas_version")
+    if row:
+        row.value = STARTER_PERSONAS_VERSION
+    else:
+        db.session.add(Setting(key="starter_personas_version", value=STARTER_PERSONAS_VERSION))
+    db.session.commit()
+
+    return {"updated": updated, "skipped": skipped}
+
+
+def get_starter_personas_version() -> str:
+    row = db.session.get(Setting, "starter_personas_version")
+    return row.value if row else STARTER_PERSONAS_VERSION
 
 STARTER_PERSONAS = [
     (
@@ -291,7 +584,11 @@ STARTER_PERSONAS = [
         "writing clear user stories and acceptance criteria, analysing business processes, "
         "identifying gaps and improvements, and communicating findings in plain language "
         "suitable for both technical and non-technical stakeholders. Use structured formats "
-        "such as use-case tables, process flows, and RACI matrices where helpful."
+        "such as use-case tables, process flows, and RACI matrices where helpful.\n"
+        "REQUIREMENTS CONTRACT: emit and NEVER renumber stable `REQ-nnn` IDs. Each "
+        "requirement uses a heading the parser recognises, e.g. `## REQ-014 — Use SQLite "
+        "and MySQL`. Do not merge, split or renumber existing IDs, and allocate new IDs "
+        "from the numbers the project provides. Every downstream artifact traces to these IDs."
     ),
     (
         "Python Developer",
@@ -307,7 +604,15 @@ STARTER_PERSONAS = [
         "risk, and stakeholder communication. Help create project plans, risk registers, "
         "status reports, and meeting agendas. Identify dependencies and critical-path items. "
         "Use recognised frameworks (Agile, PRINCE2, PMI) where relevant, and always keep the "
-        "conversation focused on actionable next steps."
+        "conversation focused on actionable next steps.\n"
+        "PROPAGATION CONTRACT: during propagation you are NOT talking to the user directly — "
+        "questions go to the BA inbox. Use `ask_question` for genuine ambiguity (blocking=true only "
+        "when you cannot produce a correct artifact without an answer; blocking=false otherwise, writing "
+        "your best guess with an inline assumption marker formatted exactly as "
+        "`> **⚠️ ASSUMPTION (Q-nnnn):** <text> — Project Manager`). Use `raise_issue` for risks and "
+        "suggestions, and `propose_artifact` when a new document is genuinely needed — never write an "
+        "unregistered file. Maintain `derives_from` front-matter exactly and preserve unaffected "
+        "sections verbatim in a whole-file rewrite."
     ),
     (
         "Data Scientist",
@@ -325,7 +630,16 @@ STARTER_PERSONAS = [
         "correctness. Prioritize data quality, security, least-privilege access, backup/restore awareness, "
         "and migration safety. Avoid destructive changes, exposing sensitive data, or making assumptions "
         "about production data. When proposing changes, explain tradeoffs, include rollback considerations, "
-        "and ask before modifying schemas, permissions, stored procedures, or data migration logic."
+        "and ask before modifying schemas, permissions, stored procedures, or data migration logic.\n"
+        "FILE PREFIX: prefix every file you generate with `DB_`, e.g. `DB_data_model.md`.\n"
+        "PROPAGATION CONTRACT: during propagation you are NOT talking to the user directly — "
+        "questions go to the BA inbox. Use `ask_question` for genuine ambiguity (blocking=true only "
+        "when you cannot produce a correct artifact without an answer; blocking=false otherwise, writing "
+        "your best guess with an inline assumption marker formatted exactly as "
+        "`> **⚠️ ASSUMPTION (Q-nnnn):** <text> — Database Developer`). Use `raise_issue` for risks and "
+        "suggestions, and `propose_artifact` when a new document is genuinely needed — never write an "
+        "unregistered file. Maintain `derives_from` front-matter exactly and preserve unaffected "
+        "sections verbatim in a whole-file rewrite."
     ),
     (
         "Technical Writer",
@@ -343,7 +657,16 @@ STARTER_PERSONAS = [
         "builds, automated testing, vulnerability scanning, secret management, auditability, and clear "
         "rollback paths. Identify risks with severity, evidence, and practical remediation steps. "
         "Do not expose secrets or sensitive data, and ask before making changes to deployment, "
-        "access control, production, or compliance-related configurations."
+        "access control, production, or compliance-related configurations.\n"
+        "FILE PREFIX: prefix every file you generate with `SEC_`, e.g. `SEC_risk_register.md`.\n"
+        "PROPAGATION CONTRACT: during propagation you are NOT talking to the user directly — "
+        "questions go to the BA inbox. Use `ask_question` for genuine ambiguity (blocking=true only "
+        "when you cannot produce a correct artifact without an answer; blocking=false otherwise, writing "
+        "your best guess with an inline assumption marker formatted exactly as "
+        "`> **⚠️ ASSUMPTION (Q-nnnn):** <text> — DevSecOps Engineer`). Use `raise_issue` for risks and "
+        "suggestions, and `propose_artifact` when a new document is genuinely needed — never write an "
+        "unregistered file. Maintain `derives_from` front-matter exactly and preserve unaffected "
+        "sections verbatim in a whole-file rewrite."
     ),
     (
         "Security Analyst",
@@ -351,7 +674,15 @@ STARTER_PERSONAS = [
         "mitigations, and explain security concepts clearly. Reference frameworks such as "
         "MITRE ATT&CK, OWASP Top 10, NIST, and CIS Controls where applicable. When reviewing "
         "code or architecture, identify attack surfaces and suggest defence-in-depth strategies. "
-        "Always note relevant compliance considerations (GDPR, HIPAA, SOC2)."
+        "Always note relevant compliance considerations (GDPR, HIPAA, SOC2).\n"
+        "PROPAGATION CONTRACT: during propagation you are NOT talking to the user directly — "
+        "questions go to the BA inbox. Use `ask_question` for genuine ambiguity (blocking=true only "
+        "when you cannot produce a correct artifact without an answer; blocking=false otherwise, writing "
+        "your best guess with an inline assumption marker formatted exactly as "
+        "`> **⚠️ ASSUMPTION (Q-nnnn):** <text> — Security Analyst`). Use `raise_issue` for risks and "
+        "suggestions, and `propose_artifact` when a new document is genuinely needed — never write an "
+        "unregistered file. Maintain `derives_from` front-matter exactly and preserve unaffected "
+        "sections verbatim in a whole-file rewrite."
     ),
     (
         "UX Designer",
@@ -359,7 +690,15 @@ STARTER_PERSONAS = [
         "creation, wireframe descriptions, information architecture, and usability heuristics. "
         "Ground recommendations in accessibility standards (WCAG 2.1), Nielsen's heuristics, "
         "and evidence-based design principles. Describe layouts and interactions clearly "
-        "in text, and suggest tools and methods appropriate to the project stage."
+        "in text, and suggest tools and methods appropriate to the project stage.\n"
+        "PROPAGATION CONTRACT: during propagation you are NOT talking to the user directly — "
+        "questions go to the BA inbox. Use `ask_question` for genuine ambiguity (blocking=true only "
+        "when you cannot produce a correct artifact without an answer; blocking=false otherwise, writing "
+        "your best guess with an inline assumption marker formatted exactly as "
+        "`> **⚠️ ASSUMPTION (Q-nnnn):** <text> — UX Designer`). Use `raise_issue` for risks and "
+        "suggestions, and `propose_artifact` when a new document is genuinely needed — never write an "
+        "unregistered file. Maintain `derives_from` front-matter exactly and preserve unaffected "
+        "sections verbatim in a whole-file rewrite."
     ),
 ]
 
@@ -369,15 +708,55 @@ def init_db(app=None):
         with app.app_context():
             db.create_all()
             _ensure_archived_columns()
+            _ensure_folder_project_columns()
             _seed_personas_and_settings()
             _ensure_api_key_column_capacity()
             migrate_existing_api_keys()
+            _ensure_repair_watermark()
     else:
         db.create_all()
         _ensure_archived_columns()
+        _ensure_folder_project_columns()
         _seed_personas_and_settings()
         _ensure_api_key_column_capacity()
         migrate_existing_api_keys()
+        _ensure_repair_watermark()
+
+
+def _ensure_repair_watermark():
+    existing = db.session.get(Setting, "tool_call_repair_version")
+    if not existing:
+        db.session.add(Setting(key="tool_call_repair_version", value="1"))
+        db.session.commit()
+
+
+# Folders columns added by the project (C07) feature. Kept in sync with the
+# Folder model so existing SQLite and MySQL databases self-heal on startup.
+_FOLDER_PROJECT_COLUMNS = [
+    ("kind", "VARCHAR(50) NOT NULL DEFAULT 'folder'"),
+    ("workspace_dir", "VARCHAR(512) NOT NULL DEFAULT ''"),
+    ("template_id", "VARCHAR(100) NOT NULL DEFAULT ''"),
+    ("propagation_mode", "VARCHAR(50) NOT NULL DEFAULT 'off'"),
+    ("next_req_seq", "INTEGER NOT NULL DEFAULT 1"),
+    ("token_budget", "INTEGER NOT NULL DEFAULT 0"),
+    ("ba_conversation_id", "INTEGER NULL"),
+]
+
+
+def _ensure_column(table: str, column: str, ddl: str):
+    try:
+        inspector = inspect(db.engine)
+        columns = [c["name"] for c in inspector.get_columns(table)]
+    except Exception:
+        return
+    if column not in columns:
+        db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        db.session.commit()
+
+
+def _ensure_folder_project_columns():
+    for column, ddl in _FOLDER_PROJECT_COLUMNS:
+        _ensure_column("folders", column, ddl)
 
 
 def _ensure_archived_columns():
@@ -432,6 +811,10 @@ def _seed_personas_and_settings():
         if not existing:
             setting = Setting(key=key, value=val)
             db.session.add(setting)
+
+    # Track the starter-persona version so edits are never silently clobbered.
+    if not db.session.get(Setting, "starter_personas_version"):
+        db.session.add(Setting(key="starter_personas_version", value=STARTER_PERSONAS_VERSION))
 
     # Personas seeding
     for name, prompt in STARTER_PERSONAS:
@@ -1043,3 +1426,682 @@ def purge_all_conversations() -> dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Artifacts ────────────────────────────────────────────────────────────────────
+
+def list_artifacts(project_id: int) -> list[dict]:
+    rows = Artifact.query.filter_by(project_id=project_id).order_by(Artifact.artifact_key.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def get_artifact(project_id: int, artifact_key: str) -> dict | None:
+    row = Artifact.query.filter_by(project_id=project_id, artifact_key=artifact_key).first()
+    return row.to_dict() if row else None
+
+
+def create_artifact(
+    project_id: int,
+    artifact_key: str,
+    rel_path: str,
+    role_persona_id: int | None = None,
+    version: int = 1,
+    content_hash: str = "",
+    status: str = "current",
+    origin: str = "human",
+) -> dict:
+    artifact = Artifact(
+        project_id=project_id,
+        artifact_key=artifact_key,
+        role_persona_id=role_persona_id,
+        rel_path=rel_path,
+        version=version,
+        content_hash=content_hash,
+        status=status,
+        origin=origin,
+    )
+    db.session.add(artifact)
+    db.session.commit()
+    return artifact.to_dict()
+
+
+def delete_artifact(project_id: int, artifact_key: str) -> None:
+    artifact = db.session.query(Artifact).filter_by(project_id=project_id, artifact_key=artifact_key).first()
+    if artifact:
+        db.session.delete(artifact)
+        db.session.commit()
+
+
+# ── Artifact Dependencies ──────────────────────────────────────────────────────
+
+def create_artifact_dep(project_id: int, upstream_key: str, downstream_key: str) -> dict:
+    dep = ArtifactDep(
+        project_id=project_id,
+        upstream_key=upstream_key,
+        downstream_key=downstream_key,
+    )
+    db.session.add(dep)
+    db.session.commit()
+    return dep.to_dict()
+
+
+def list_artifact_deps(project_id: int) -> list[dict]:
+    rows = ArtifactDep.query.filter_by(project_id=project_id).order_by(ArtifactDep.upstream_key.asc(), ArtifactDep.downstream_key.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def delete_artifact_deps(project_id: int, upstream_key: str | None = None, downstream_key: str | None = None) -> None:
+    query = ArtifactDep.query.filter_by(project_id=project_id)
+    if upstream_key is not None:
+        query = query.filter_by(upstream_key=upstream_key)
+    if downstream_key is not None:
+        query = query.filter_by(downstream_key=downstream_key)
+    query.delete(synchronize_session=False)
+    db.session.commit()
+
+
+# ── Artifact Traces ────────────────────────────────────────────────────────────
+
+def create_artifact_trace(project_id: int, artifact_key: str, req_id: str) -> dict:
+    trace = ArtifactTrace(
+        project_id=project_id,
+        artifact_key=artifact_key,
+        req_id=req_id,
+    )
+    db.session.add(trace)
+    db.session.commit()
+    return trace.to_dict()
+
+
+def list_artifact_traces(project_id: int, artifact_key: str | None = None, req_id: str | None = None) -> list[dict]:
+    query = ArtifactTrace.query.filter_by(project_id=project_id)
+    if artifact_key:
+        query = query.filter_by(artifact_key=artifact_key)
+    if req_id:
+        query = query.filter_by(req_id=req_id)
+    rows = query.order_by(ArtifactTrace.artifact_key.asc(), ArtifactTrace.req_id.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_artifact(project_id: int, artifact_key: str, **updates) -> dict:
+    artifact = db.session.query(Artifact).filter_by(project_id=project_id, artifact_key=artifact_key).first()
+    if not artifact:
+        return None
+    for key, value in updates.items():
+        setattr(artifact, key, value)
+    db.session.commit()
+    return artifact.to_dict()
+
+
+# ── Change Events ────────────────────────────────────────────────────────────────
+
+def create_change_event(
+    project_id: int,
+    source_key: str,
+    from_version: int,
+    to_version: int,
+    summary: str | None = None,
+    changed_reqs: list | None = None,
+    removed_reqs: list | None = None,
+    diff: str | None = None,
+    origin: str = "human",
+) -> dict:
+    # Use max id + 1 for simplicity, or get from DB
+    from sqlalchemy import func
+    max_id = db.session.query(func.max(ChangeEvent.id)).scalar()
+    new_id = (max_id or 0) + 1
+
+    changed_reqs_json = json.dumps(changed_reqs) if changed_reqs else None
+    removed_reqs_json = json.dumps(removed_reqs) if removed_reqs else None
+
+    event = ChangeEvent(
+        id=new_id,
+        project_id=project_id,
+        source_key=source_key,
+        from_version=from_version,
+        to_version=to_version,
+        summary=summary,
+        changed_reqs=changed_reqs_json,
+        removed_reqs=removed_reqs_json,
+        diff=diff,
+        origin=origin,
+        created_at=_now(),
+    )
+    db.session.add(event)
+    db.session.commit()
+    return event.to_dict()
+
+
+def list_change_events(project_id: int) -> list[dict]:
+    rows = ChangeEvent.query.filter_by(project_id=project_id).order_by(ChangeEvent.created_at.desc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_change_event(change_id: int, **updates) -> dict | None:
+    event = db.session.get(ChangeEvent, change_id)
+    if not event:
+        return None
+    for key, value in updates.items():
+        setattr(event, key, value)
+    db.session.commit()
+    return event.to_dict()
+
+
+# ── Propagation Jobs ────────────────────────────────────────────────────────────
+
+def create_propagation_job(
+    change_id: int,
+    artifact_key: str,
+    persona_id: int | None,
+    depth: int,
+    batch_id: str | None = None,
+    conversation_id: int | None = None,
+) -> dict:
+    from sqlalchemy import func
+    max_id = db.session.query(func.max(PropagationJob.id)).scalar()
+    new_id = (max_id or 0) + 1
+
+    job = PropagationJob(
+        id=new_id,
+        change_id=change_id,
+        artifact_key=artifact_key,
+        persona_id=persona_id,
+        state="pending",
+        depth=depth,
+        batch_id=batch_id,
+        conversation_id=conversation_id,
+        tokens_used=0,
+        attempts=0,
+        created_at=_now(),
+    )
+    db.session.add(job)
+    db.session.commit()
+    return job.to_dict()
+
+
+def list_propagation_jobs(change_id: int) -> list[dict]:
+    rows = PropagationJob.query.filter_by(change_id=change_id).order_by(PropagationJob.depth.asc(), PropagationJob.artifact_key.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_propagation_job(job_id: int, **updates) -> dict | None:
+    job = db.session.get(PropagationJob, job_id)
+    if not job:
+        return None
+    for key, value in updates.items():
+        setattr(job, key, value)
+    db.session.commit()
+    return job.to_dict()
+
+
+# ── Agent Issues ─────────────────────────────────────────────────────────────────
+
+def create_agent_issue(
+    project_id: int,
+    raised_by_key: str,
+    raised_by_persona_id: int | None,
+    change_id: int | None,
+    depth: int,
+    kind: str,  # question / risk / suggestion / conflict
+    req_id: str | None = None,
+    blocking: int | None = None,
+    body: str | None = None,
+    proposed_answer: str | None = None,
+) -> dict:
+    from sqlalchemy import func
+    max_id = db.session.query(func.max(AgentIssue.id)).scalar()
+    new_id = (max_id or 0) + 1
+
+    issue = AgentIssue(
+        id=new_id,
+        project_id=project_id,
+        raised_by_key=raised_by_key,
+        raised_by_persona_id=raised_by_persona_id,
+        change_id=change_id,
+        depth=depth,
+        kind=kind,
+        req_id=req_id,
+        blocking=blocking,
+        body=body,
+        proposed_answer=proposed_answer,
+        status="open",
+        answered_at=None,
+        stale_context=0,
+        digest_message_id=None,
+        created_at=_now(),
+    )
+    db.session.add(issue)
+    db.session.commit()
+    return issue.to_dict()
+
+
+def list_agent_issues(
+    project_id: int,
+    kind: str | None = None,
+    status: str | None = None,
+    blocking: int | None = None,
+) -> list[dict]:
+    query = AgentIssue.query.filter_by(project_id=project_id)
+    if kind:
+        query = query.filter_by(kind=kind)
+    if status:
+        query = query.filter_by(status=status)
+    if blocking is not None:
+        query = query.filter(AgentIssue.blocking == blocking)
+    rows = query.order_by(AgentIssue.created_at.desc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_agent_issue(issue_id: int, **updates) -> dict | None:
+    issue = db.session.get(AgentIssue, issue_id)
+    if not issue:
+        return None
+    for key, value in updates.items():
+        setattr(issue, key, value)
+    if issue.status == "answered" and issue.answered_at is None:
+        issue.answered_at = _now()
+    db.session.commit()
+    return issue.to_dict()
+
+
+# ── Artifact Assumptions ────────────────────────────────────────────────────────
+
+def create_artifact_assumption(
+    project_id: int,
+    artifact_key: str,
+    req_id: str,
+    marker_text: str,
+) -> dict:
+    from sqlalchemy import func
+    max_id = db.session.query(func.max(ArtifactAssumption.id)).scalar()
+    new_id = (max_id or 0) + 1
+
+    assumption = ArtifactAssumption(
+        id=new_id,
+        project_id=project_id,
+        artifact_key=artifact_key,
+        req_id=req_id,
+        marker_text=marker_text,
+        resolved=0,
+    )
+    db.session.add(assumption)
+    db.session.commit()
+    return assumption.to_dict()
+
+
+def list_artifact_assumptions(project_id: int, artifact_key: str | None = None) -> list[dict]:
+    query = ArtifactAssumption.query.filter_by(project_id=project_id)
+    if artifact_key:
+        query = query.filter_by(artifact_key=artifact_key)
+    rows = query.order_by(ArtifactAssumption.req_id.asc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_artifact_assumption(assumption_id: int, **updates) -> dict | None:
+    assumption = db.session.get(ArtifactAssumption, assumption_id)
+    if not assumption:
+        return None
+    for key, value in updates.items():
+        setattr(assumption, key, value)
+    db.session.commit()
+    return assumption.to_dict()
+
+
+# ── Artifact Requests ───────────────────────────────────────────────────────────
+
+def create_artifact_request(
+    project_id: int,
+    persona_id: int | None,
+    artifact_key: str,
+    rel_path: str,
+    rationale: str | None = None,
+) -> dict:
+    from sqlalchemy import func
+    max_id = db.session.query(func.max(ArtifactRequest.id)).scalar()
+    new_id = (max_id or 0) + 1
+
+    request = ArtifactRequest(
+        id=new_id,
+        project_id=project_id,
+        persona_id=persona_id,
+        artifact_key=artifact_key,
+        rel_path=rel_path,
+        rationale=rationale,
+        status="pending",
+        created_at=_now(),
+    )
+    db.session.add(request)
+    db.session.commit()
+    return request.to_dict()
+
+
+def list_artifact_requests(
+    project_id: int,
+    artifact_key: str | None = None,
+    status: str | None = None,
+) -> list[dict]:
+    query = ArtifactRequest.query.filter_by(project_id=project_id)
+    if artifact_key:
+        query = query.filter_by(artifact_key=artifact_key)
+    if status:
+        query = query.filter_by(status=status)
+    rows = query.order_by(ArtifactRequest.created_at.desc()).all()
+    return [r.to_dict() for r in rows]
+
+
+def update_artifact_request(request_id: int, status: str = None, **updates) -> dict | None:
+    request = db.session.get(ArtifactRequest, request_id)
+    if not request:
+        return None
+    if status is not None:
+        request.status = status
+    for key, value in updates.items():
+        setattr(request, key, value)
+    db.session.commit()
+    return request.to_dict()
+
+
+# ── Folder Project Setup ────────────────────────────────────────────────────────
+
+def update_folder_project(
+    project_id: int,
+    workspace_dir: str = None,
+    kind: str = None,
+    template_id: str = None,
+    propagation_mode: str = None,
+    next_req_seq: int = None,
+    token_budget: int = None,
+    ba_conversation_id: int = None,
+) -> dict:
+    f = db.session.get(Folder, project_id)
+    if not f:
+        return None
+    if workspace_dir is not None:
+        f.workspace_dir = workspace_dir
+    if kind is not None:
+        f.kind = kind
+    if template_id is not None:
+        f.template_id = template_id
+    if propagation_mode is not None:
+        f.propagation_mode = propagation_mode
+    if next_req_seq is not None:
+        f.next_req_seq = next_req_seq
+    if token_budget is not None:
+        f.token_budget = token_budget
+    if ba_conversation_id is not None:
+        f.ba_conversation_id = ba_conversation_id
+    f.updated_at = _now()
+    db.session.commit()
+    return f.to_dict()
+
+
+def register_project_from_template(project_id: int, template_id: str, workspace_dir: str) -> dict:
+    """Register a project from a template, creating artifact rows from the template."""
+    import os
+    from templates import get_template, expand_role_edges_to_artifact_edges, topological_sort, CycleDetectedError
+
+    # Validate template
+    template = get_template(template_id)
+    if not template:
+        raise ValueError(f"Unknown template: {template_id}")
+
+    # Build artifact keys and edges first so cycle detection happens before any writes
+    artifact_keys = [a.key for a in template.artifacts]
+    edges = expand_role_edges_to_artifact_edges(template)
+    try:
+        topological_sort(artifact_keys, edges)
+    except CycleDetectedError:
+        raise
+
+    # Update folder with project info
+    f = db.session.get(Folder, project_id)
+    if not f:
+        return None
+    f.kind = "project"
+    f.template_id = template_id
+    f.workspace_dir = workspace_dir
+    f.propagation_mode = template.default_propagation_mode if template.default_propagation_mode else "propose"
+    f.next_req_seq = 1
+    f.token_budget = 0
+    f.updated_at = _now()
+    db.session.commit()
+
+    # Map role -> persona id (may be None if the persona is not seeded)
+    persona_by_name = {p.name: p.id for p in Persona.query.all()}
+
+    registered_keys = []
+
+    # Create default artifact files if they don't exist, then register them
+    for spec in template.artifacts:
+        dir_path = os.path.join(workspace_dir, os.path.dirname(spec.rel_path))
+        file_path = os.path.join(workspace_dir, spec.rel_path)
+
+        if not os.path.exists(file_path):
+            os.makedirs(dir_path, exist_ok=True)
+            fm = "---\nartifact_id: %s\nrole: %s\nversion: 1\norigin: human\nderives_from: []\n---\n" % (
+                spec.key,
+                spec.role,
+            )
+            body = "## placeholder\n\n# %s\n\n_Placeholder content_\n" % spec.key
+            with open(file_path, 'w', encoding='utf-8') as fw:
+                fw.write(fm + body)
+
+        # Read content and hash
+        content, file_exists = read_artifact_file(workspace_dir, spec.rel_path)
+        content_hash = ""
+        if file_exists and content:
+            content_hash = compute_content_hash(content)
+
+        role_persona_id = persona_by_name.get(template.role_to_persona.get(spec.role))
+
+        create_artifact(
+            project_id=project_id,
+            artifact_key=spec.key,
+            role_persona_id=role_persona_id,
+            rel_path=spec.rel_path,
+            version=1,
+            content_hash=content_hash,
+            status="current",
+            origin="human",
+        )
+        registered_keys.append(spec.key)
+
+    # Create artifact dependencies (expanded role edges)
+    delete_artifact_deps(project_id)
+    for upstream, downstream in edges:
+        create_artifact_dep(project_id, upstream, downstream)
+
+    # Initialize the git repo for the workspace
+    try:
+        from git_integration import init_project_workspace
+        init_project_workspace(workspace_dir)
+    except Exception:
+        pass
+
+    return {
+        "project_id": project_id,
+        "template_id": template_id,
+        "artifacts_registered": len(registered_keys),
+        "edges_created": len(edges),
+        "artifact_keys": registered_keys,
+    }
+
+
+def compute_content_hash(content: str) -> str:
+    """Compute SHA-256 hash of content."""
+    import hashlib
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+
+def is_artifact_registered(project_id: int, artifact_key: str) -> bool:
+    """Check whether an artifact key is registered for the project."""
+    return db.session.query(Artifact.id)\
+        .filter_by(project_id=project_id, artifact_key=artifact_key)\
+        .first() is not None
+
+
+def get_artifact_context(
+    project_id: int,
+    artifact_keys: list[str],
+    change_event: dict | None = None,
+) -> tuple[str, int, list[str]]:
+    """
+    DB-backed scoped artifact context lookup (C07).
+
+    Loads the requested artifact contents from disk using each artifact's
+    registered ``rel_path``, then builds a scoped context via
+    ``file_handler.build_artifact_context``.
+
+    Returns:
+        (context_str, total_char_count, truncated_keys_list)
+    """
+    from file_handler import build_artifact_context
+
+    project = get_folder(project_id)
+    if not project:
+        return "", 0, []
+
+    workspace_dir = project.get("workspace_dir", "")
+    if not artifact_keys or not workspace_dir:
+        return "", 0, []
+
+    artifacts = {}
+    for artifact in Artifact.query.filter_by(project_id=project_id).all():
+        if artifact.artifact_key not in artifact_keys:
+            continue
+        rel_path = artifact.rel_path
+        content, file_exists = read_artifact_file(workspace_dir, rel_path)
+        if file_exists:
+            artifacts[artifact.artifact_key] = {"content": content, "rel_path": rel_path}
+
+    return build_artifact_context(artifacts, change_event or {})
+
+
+def get_project_artifact_graph(project_id: int) -> dict:
+    """Return the artifact dependency graph with sorted keys, edges and depths."""
+    from templates import topological_sort, compute_depths, CycleDetectedError
+
+    artifacts = list_artifacts(project_id)
+    edges = [(d["upstream_key"], d["downstream_key"]) for d in list_artifact_deps(project_id)]
+    artifact_keys = [a["artifact_key"] for a in artifacts]
+
+    try:
+        sorted_keys = topological_sort(artifact_keys, edges)
+    except CycleDetectedError:
+        sorted_keys = sorted(artifact_keys)
+
+    depths = compute_depths(artifact_keys, edges)
+
+    return {
+        "project_id": project_id,
+        "artifact_keys": artifact_keys,
+        "sorted_keys": sorted_keys,
+        "edges": edges,
+        "depths": depths,
+    }
+
+
+def _setup_default_dependencies(project_id: int, artifact_files: dict[str, str]) -> None:
+    """Set up default artifact dependencies based on the SDLC role graph."""
+    from database import ArtifactDep
+
+    key_map = artifact_files
+
+    # Clear existing deps
+    ArtifactDep.query.filter_by(project_id=project_id).delete()
+
+    # Define template deps (upstream -> downstream)
+    # Using artifact key names from the sdlc template
+    template_deps = [
+        ("BA-REQ", "DB-MODEL"),
+        ("BA-REQ", "UX-WIRE"),
+        ("BA-REQ", "SEC-RISK"),
+        ("DB-MODEL", "QA-PLAN"),
+        ("QA-PLAN", "PM-PLAN"),
+    ]
+
+    for upstream, downstream in template_deps:
+        if upstream in key_map and downstream in key_map:
+            dep = ArtifactDep(
+                project_id=project_id,
+                upstream_key=upstream,
+                downstream_key=downstream,
+            )
+            db.session.add(dep)
+    db.session.commit()
+
+
+def read_artifact_file(workspace_dir: str, rel_path: str) -> tuple[str, bool]:
+    full_path = os.path.join(workspace_dir, rel_path)
+    if not os.path.exists(full_path):
+        return "", False
+    try:
+        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        return content, True
+    except Exception:
+        return "", False
+
+
+# ── Thread-safe session helper (0.4) ──────────────────────────────────────────
+
+def run_with_session(app, fn):
+    """
+    Run a worker-style job inside an app context with a scoped session,
+    committed on success, rolled back on error, and the session removed after.
+
+    Args:
+        app: The Flask application.
+        fn: A zero-argument callable that performs DB work.
+
+    Returns:
+        The return value of ``fn``.
+    """
+    with app.app_context():
+        try:
+            result = fn()
+            db.session.commit()
+            return result
+        except Exception:
+            db.session.rollback()
+            raise
+        finally:
+            db.session.remove()
+
+
+# ── Repair watermark (0.4) ─────────────────────────────────────────────────────
+
+def should_run_repair(version: str) -> bool:
+    """Return True if the repair routine at ``version`` has not yet run."""
+    row = db.session.get(Setting, "tool_call_repair_version")
+    return row is None or row.value != str(version)
+
+
+def mark_repair_complete(version: str) -> None:
+    """Record that the repair routine at ``version`` has completed."""
+    row = db.session.get(Setting, "tool_call_repair_version")
+    if row:
+        row.value = str(version)
+    else:
+        db.session.add(Setting(key="tool_call_repair_version", value=str(version)))
+    db.session.commit()
+
+
+# ── Cascade / lifecycle cleanup wrappers (C09) ──────────────────────────────────
+
+def cleanup_on_folder_delete(project_id: int, workspace_dir: str) -> dict:
+    """Per D9: never delete user documents from a sidebar action; warn instead."""
+    from git_integration import cleanup_on_folder_delete as _impl
+    return _impl(project_id, workspace_dir)
+
+
+def cleanup_on_purge() -> dict:
+    """Per D9: clear jobs/changes or explicitly preserve them on purge."""
+    from git_integration import cleanup_on_purge as _impl
+    return _impl()
+
+
+def verify_git_on_startup() -> tuple[bool, str]:
+    """Verify git is available when the application starts."""
+    from git_integration import verify_git_on_startup as _impl
+    return _impl()

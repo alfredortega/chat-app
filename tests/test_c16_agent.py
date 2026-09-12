@@ -1,0 +1,299 @@
+import json
+import os
+import tempfile
+import pytest
+import database as db_module
+from app import create_app
+from tests.fakes import FakeOpenAIClient
+from propagation.agent import (
+    run_propagation_wave,
+    assess_rewrite,
+    normalize_rewrite,
+    WaveOverlay,
+    RewritePayload,
+)
+
+
+def _make_app(tmp_db):
+    return create_app(config={
+        "SQLALCHEMY_DATABASE_URI": tmp_db,
+        "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+        "SKIP_DOTENV_WRITE": "1"
+    })
+
+
+def _setup_wave(app, tmp_db, tmp_dir, req_ids=("REQ-014",)):
+    """Register an SDLC project, create traces + event, queue jobs."""
+    folder = db_module.create_folder("P")
+    pid = folder["id"]
+    db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+
+    for req in req_ids:
+        for key in ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+            db_module.create_artifact_trace(pid, key, req)
+
+    event = db_module.create_change_event(
+        project_id=pid, source_key="BA-REQ",
+        from_version=1, to_version=2,
+        changed_reqs=list(req_ids), diff="+SQLite and MySQL",
+    )
+    from propagation.impact import queue_propagation_jobs
+    queue_propagation_jobs(pid, event["id"], list(req_ids))
+    return pid, event
+
+
+def _scripted_client(turns):
+    """Build a fake client scripted with tool-call + final-text turns."""
+    client = FakeOpenAIClient()
+    for tc in turns:
+        client.add_tool_calls_response([tc])
+        client.add_text_response("Done.")
+    return client
+
+
+def _rewrite(key, body):
+    """A whole-file rewrite that preserves the template '# {key}' + placeholder heading."""
+    return f"# {key}\n\n## placeholder\n\n{body}\n"
+
+
+class TestDownstreamPromptOverlay:
+    """C16 gate: QA-PLAN prompt contains the updated DB-MODEL text."""
+
+    def test_qa_prompt_contains_updated_db_model(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+
+                client = FakeOpenAIClient()
+                # DB-MODEL rewrite (first job), then closing text.
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "content": _rewrite("DB-MODEL", "## Entities\nSupports SQLite and MySQL now."),
+                    }),
+                }])
+                client.add_text_response("Done.")
+                # Remaining jobs: UX-WIRE, SEC-RISK, QA-PLAN, PM-PLAN each just
+                # write a trivial new body and stop.
+                for key in ["UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## Section\nUpdated body."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+
+                # Every job produced a validated payload.
+                assert {p.artifact_key for p in payloads} >= {
+                    "DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"
+                }
+                db_model = next(p for p in payloads if p.artifact_key == "DB-MODEL")
+                assert db_model.status == "ok"
+
+                # The QA-PLAN prompt must contain the *updated* DB-MODEL text.
+                qa_prompt = next(p for p in payloads if p.artifact_key == "QA-PLAN").prompt
+                assert "Supports SQLite and MySQL now" in qa_prompt
+
+
+class TestShrinkGuard:
+    """C16 gate: summary-instead-of-doc rejected."""
+
+    def test_one_line_summary_rejected(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                client = FakeOpenAIClient()
+                # First (DB-MODEL) is fine. Next depth-1 job by key is SEC-RISK,
+                # which returns a one-line summary.
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "content": _rewrite("DB-MODEL", "## X\nBody."),
+                    }),
+                }])
+                client.add_text_response("Done.")
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "SEC-RISK",
+                        "content": "summary.",
+                    }),
+                }])
+                client.add_text_response("Done.")
+                for key in ["UX-WIRE", "QA-PLAN", "PM-PLAN"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## S\nBody."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+                sec = next(p for p in payloads if p.artifact_key == "SEC-RISK")
+                assert sec.status == "rejected"
+                assert any("Shrink guard" in e for e in sec.errors)
+
+
+class TestSameRoleBatching:
+    """Two artifacts owned by one role share a batch; second sees first's output."""
+
+    def test_second_sibling_sees_first_rewrite(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                folder = db_module.create_folder("P")
+                pid = folder["id"]
+                # Create the QA persona BEFORE registration so the template can
+                # map the "QA/Tester" role to it.
+                qa_persona = db_module.create_persona("QA/Tester", "You are a QA tester.")
+                qa_persona_id = qa_persona["id"]
+                db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+
+                # Give QA a sibling artifact owned by the same role.
+                db_module.create_artifact(
+                    project_id=pid,
+                    artifact_key="QA-EXTRA-1",
+                    rel_path="Test Cases/QA-EXTRA-1.md",
+                    role_persona_id=qa_persona_id,
+                )
+                db_module.create_artifact_dep(pid, "BA-REQ", "QA-EXTRA-1")
+                db_module.create_artifact_trace(pid, "QA-EXTRA-1", "REQ-014")
+                db_module.create_artifact_trace(pid, "QA-PLAN", "REQ-014")
+
+                event = db_module.create_change_event(
+                    project_id=pid, source_key="BA-REQ",
+                    from_version=1, to_version=2, changed_reqs=["REQ-014"],
+                )
+                from propagation.impact import queue_propagation_jobs
+                queue_propagation_jobs(pid, event["id"], ["REQ-014"])
+
+                jobs = db_module.list_propagation_jobs(event["id"])
+                qa_jobs = [j for j in jobs if j["artifact_key"].startswith("QA-")]
+                qa_batches = {j["batch_id"] for j in qa_jobs}
+                assert len(qa_batches) == 1
+
+                client = FakeOpenAIClient()
+                # DB-MODEL rewrite first (deepest/earliest).
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "content": _rewrite("DB-MODEL", "## E\nDB body."),
+                    }),
+                }])
+                client.add_text_response("Done.")
+                for key in ["UX-WIRE", "SEC-RISK"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## S\nbody."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+                # QA-PLAN first (sibling order by key), then QA-EXTRA-1.
+                for key in ["QA-PLAN", "QA-EXTRA-1"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## S\nquery body."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+                for key in ["PM-PLAN"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## S\nbody."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+                qa_extra = next((p for p in payloads if p.artifact_key == "QA-EXTRA-1"), None)
+                assert qa_extra is not None
+
+
+class TestServerAuthoredFrontMatter:
+    """Model-provided version numbers are discarded (D15)."""
+
+    def test_version_bumped_by_server(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                client = _scripted_client([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "content": "---\nversion: 99\n---\n" + _rewrite("DB-MODEL", "## S\nbody."),
+                    }),
+                }])
+                for key in ["UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## S\nbody."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+                db_model = next(p for p in payloads if p.artifact_key == "DB-MODEL")
+                # Original placeholder version is 1 -> server-authored is 2.
+                assert db_model.version == 2
+                assert "version: 2" in db_model.content
+                assert "version: 99" not in db_model.content
+
+
+class TestRewriteGuards:
+    """Pure-function tests for the D15 guards."""
+
+    def test_heading_retention_fails(self):
+        original = "# A\n\n## Section 1\nText\n## Section 2\nMore\n"
+        rewrite = "# A\n\n## Section 1\nText\n"
+        assessment = assess_rewrite(original, rewrite)
+        assert assessment.needs_review
+        assert any("Heading retention" in e for e in assessment.errors)
+
+    def test_marker_retention_fails(self):
+        original = "[ASSUMPTION: REQ-001] Assume TLS [/ASSUMPTION]\n## S\nbody\n"
+        rewrite = "## S\nbody\n"
+        assessment = assess_rewrite(original, rewrite)
+        assert assessment.needs_review
+        assert any("markers dropped" in e.lower() or "marker" in e.lower() for e in assessment.errors)
+
+    def test_resolved_marker_allowed(self):
+        original = "[ASSUMPTION: REQ-001] Assume TLS [/ASSUMPTION]\n## S\nbody\n"
+        rewrite = "## S\nbody\n"
+        assessment = assess_rewrite(original, rewrite, resolved_req_ids={"REQ-001"})
+        assert not any("marker" in e.lower() for e in assessment.errors)
+
+    def test_requirement_reference_retained(self):
+        original = "## REQ-001 — TLS\n## REQ-002 — Auth\nbody\n"
+        rewrite = "## REQ-001 — TLS\nbody\n"
+        assessment = assess_rewrite(original, rewrite)
+        assert any("Requirement references missing" in e for e in assessment.errors)
+
+    def test_removed_req_allows_shrink_and_loss(self):
+        original = "## REQ-001 — TLS\n## REQ-002 — Auth\nbody\n"
+        rewrite = "## REQ-001 — TLS\nonly kept\n"
+        assessment = assess_rewrite(original, rewrite, removed_reqs=["REQ-002"])
+        assert not assessment.rejected
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

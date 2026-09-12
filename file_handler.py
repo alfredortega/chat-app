@@ -294,3 +294,102 @@ def build_linked_folder_context(
             context += "\n\n" + upload_ctx
 
     return context, total_chars
+
+
+# ── Scoped artifact context builder (C05) ────────────────────────────────────────
+
+def build_artifact_context(
+    artifacts: dict[str, dict],
+    change_event: dict,
+    max_chars: int = HARD_LIMIT,
+) -> tuple[str, int, list[str]]:
+    """
+    Build a scoped context for artifact propagation.
+
+    This is a PURE FUNCTION over loaded artifact dicts — no DB access.
+    The eventual DB-backed version (C07) will have a different signature.
+
+    Args:
+        artifacts: Dict mapping artifact_key -> {"content": str, ...}
+            Only the declared upstream artifacts should be passed.
+        change_event: Dict with keys like "diff", "summary", "requirement_ids"
+        max_chars: Hard limit for total context size (default HARD_LIMIT)
+
+    Returns:
+        (context_str, total_char_count, truncated_keys_list)
+
+    Raises:
+        ValueError: If total content exceeds max_chars (no silent truncation).
+    """
+    if not artifacts:
+        artifacts = {}
+
+    # First, calculate sizes of all artifact sections and change event
+    # to determine what would be truncated
+    artifact_sections = {}
+    truncated_keys = []
+
+    # Sort artifact keys for deterministic ordering
+    for artifact_key in sorted(artifacts.keys()):
+        artifact = artifacts[artifact_key]
+        content = artifact.get("content", "")
+
+        if not content:
+            continue
+
+        header = f"--- ARTIFACT: {artifact_key} ---"
+        footer = f"--- END OF ARTIFACT: {artifact_key} ---"
+        artifact_section = f"{header}\n{content}\n{footer}"
+        artifact_sections[artifact_key] = artifact_section
+
+    # Calculate change event size
+    change_section = ""
+    if change_event:
+        diff = change_event.get("diff", "")
+        summary = change_event.get("summary", "")
+        requirement_ids = change_event.get("requirement_ids", [])
+
+        change_parts = []
+        if summary:
+            change_parts.append(f"Change Summary: {summary}")
+        if diff:
+            change_parts.append(f"Diff:\n{diff}")
+        if requirement_ids:
+            change_parts.append(f"Requirements in scope: {', '.join(requirement_ids)}")
+
+        if change_parts:
+            change_section = "--- CHANGE EVENT ---\n" + "\n\n".join(change_parts)
+
+    # Calculate total size
+    total_size = sum(len(s) for s in artifact_sections.values())
+    if change_section:
+        total_size += len(change_section)
+
+    # If total exceeds limit, determine what would be truncated and raise
+    if total_size > max_chars:
+        # Determine which artifacts would be included (in order) before hitting limit
+        running_total = 0
+        for artifact_key in sorted(artifact_sections.keys()):
+            section_size = len(artifact_sections[artifact_key])
+            if running_total + section_size > max_chars:
+                truncated_keys.append(artifact_key)
+            else:
+                running_total += section_size
+
+        # Check change event
+        if change_section and running_total + len(change_section) > max_chars:
+            truncated_keys.append("CHANGE_EVENT")
+
+        raise ValueError(
+            f"Context exceeds hard limit of {max_chars:,} characters "
+            f"(actual: {total_size:,}). Truncated keys: {truncated_keys}"
+        )
+
+    # Build context - everything fits
+    parts = [artifact_sections[k] for k in sorted(artifact_sections.keys())]
+    if change_section:
+        parts.append(change_section)
+
+    context = "\n\n".join(parts) if parts else ""
+    total_chars = len(context)
+    return context, total_chars, truncated_keys

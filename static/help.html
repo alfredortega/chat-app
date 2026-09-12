@@ -202,6 +202,8 @@
         <li><a href="#files">Attaching Files &amp; Folders</a></li>
         <li><a href="#output">Saving the AI's Work to Disk</a></li>
         <li><a href="#tools">What the Assistant Can Do (Tools)</a></li>
+        <li><a href="#projects">Creating a Project</a></li>
+        <li><a href="#propagation">Automatic Updates Between Personas</a></li>
         <li><a href="#settings">Settings Explained</a></li>
         <li><a href="#tips">Tips &amp; Troubleshooting</a></li>
       </ol>
@@ -517,7 +519,90 @@
     </div>
 
 
-        <h2 id="settings">11. Settings Explained</h2>
+    <h2 id="projects">11. Creating a Project</h2>
+    <p>A <strong>project</strong> is a managed workspace for a software-development
+    effort. Creating one scaffolds a set of <em>artifacts</em> — the requirements
+    document, wireframes, data model, test plan, security risk register and
+    implementation plan — organised into the folders shown below:</p>
+    <table>
+      <thead><tr><th>Folder</th><th>Artifact</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>Requirements/</code></td><td><code>BA-REQ</code></td><td>Business Analyst</td></tr>
+        <tr><td><code>Design/</code></td><td><code>UX-WIRE</code></td><td>UX Designer</td></tr>
+        <tr><td><code>Data/</code></td><td><code>DB-MODEL</code></td><td>Database Developer</td></tr>
+        <tr><td><code>Test Cases/</code></td><td><code>QA-PLAN</code></td><td>QA / Tester</td></tr>
+        <tr><td><code>Security/</code></td><td><code>SEC-RISK</code></td><td>Security Analyst</td></tr>
+        <tr><td><code>Project Plan/</code></td><td><code>PM-PLAN</code></td><td>Project Manager</td></tr>
+      </tbody>
+    </table>
+    <p>Every artifact carries YAML <em>front-matter</em>
+    (<code>artifact_id</code>, <code>role</code>, <code>version</code>,
+    <code>derives_from</code>), and the requirements document uses stable
+    <code>## REQ-nnn — Title</code> headings. These identifiers are what the
+    automatic-update machinery (section 12) uses to decide what changed.</p>
+    <p>The workspace is a git repository, so every applied update is a commit you
+    can roll back. <strong>Git is a hard requirement for managed projects.</strong></p>
+    <p>Each project folder is shown in the sidebar with a blue
+    <em>Project</em> badge and a project-panel button.</p>
+    <div class="callout">
+      <p><strong>Manual pattern (fallback):</strong> if you do not want a managed
+      project, you can still create an ordinary folder and link a directory to it
+      manually — the classic flow documented in previous versions. Forward auto-updates
+      are simply not available for such folders.</p>
+    </div>
+
+
+    <h2 id="propagation">12. Automatic Updates Between Personas</h2>
+    <p>When the Business Analyst changes a requirement, every downstream artifact
+    that is affected is detected, regenerated in dependency order, and presented to
+    you as a reviewable diff. Nothing is applied without your approval.</p>
+
+    <h3>Change detection</h3>
+    <p>Opening the project panel or pressing <em>Check for changes</em> scans the
+    workspace. A human edit to the requirements document becomes a <strong>change
+    event</strong> that records exactly which <code>REQ-nnn</code> IDs changed.
+    Routing is deterministic — no AI decides <em>what</em> changed, only <em>how</em>
+    to reflect it.</p>
+
+    <h3>Propagation modes</h3>
+    <table>
+      <thead><tr><th>Mode</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td><code>off</code></td><td>No detection, no jobs. Default for adopted projects.</td></tr>
+        <tr><td><code>notify</code></td><td>Detect changes, mark affected artifacts stale, report trace gaps. No AI spend.</td></tr>
+        <tr><td><code>propose</code></td><td>Default for new projects. Each affected artifact is rewritten into
+        <code>.agents/proposals/</code> for review.</td></tr>
+        <tr><td><code>auto</code></td><td>Writes directly to the artifacts and commits. Requires an explicit
+        one-time confirmation.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Reviewing &amp; applying</h3>
+    <p>The review modal shows a unified diff for each proposal. You can approve,
+    reject, approve the whole wave, or roll it back in one click. A <em>conflict</em>
+    appears when an artifact was hand-edited after a propagation pass — it is never
+    overwritten. A token budget protects you from runaway AI spend; when it is
+    exceeded, the remaining jobs are cancelled and reported.</p>
+
+    <h3>Questions &amp; assumptions</h3>
+    <p>Downstream roles are not allowed to guess silently. When a requirement is
+    genuinely ambiguous they raise a <strong>blocking</strong> question (the wave
+    pauses) or record a <strong>non-blocking</strong> assumption as an inline
+    <code>&#9888;&#65039; ASSUMPTION</code> marker in the artifact. Questions are
+    batched into one digest per depth and posted to a designated
+    <em>BA conversation</em> — the single inbox. You can designate that conversation
+    from the project panel. Answers you give there become durable context, so the
+    same question is not asked twice.</p>
+    <p>Persona selection is <strong>not restricted</strong> in project folders: you
+    may still talk directly to any role. The BA conversation is simply where agent
+    questions arrive.</p>
+
+    <h3>Extension requests</h3>
+    <p>A role may propose a new artifact document via the project panel. You approve
+    or reject the request there; propagation never creates files on its own.</p>
+
+
+        <h2 id="settings" style="page-break-before:always">13. Settings Explained</h2>
     <p>All application-wide settings live in the <em>Settings</em> window (the gear icon).
     Here is what each one does and how it is applied:</p>
     <table>
@@ -580,7 +665,7 @@
       defaults to on for new conversations.</li>
     </ul>
 
-        <h2 id="tips">12. Tips &amp; Troubleshooting</h2>
+        <h2 id="tips">14. Tips &amp; Troubleshooting</h2>
     <table>
       <thead><tr><th>Situation</th><th>What to check</th></tr></thead>
       <tbody>
@@ -605,6 +690,18 @@
         <tr><td>A conversation errors as soon as you send a message</td>
           <td>The model may not support tool/function calling. Turn the <em>Use Tools</em> toggle
           in the chat header off for that conversation and try again.</td></tr>
+        <tr><td>Downstream artifacts aren't auto-updating</td>
+          <td>Confirm the folder is a managed project (Project badge) and that propagation mode is
+          <code>notify</code>, <code>propose</code> or <code>auto</code> — not <code>off</code>.</td></tr>
+        <tr><td>The wave looks green but documents contain guesses</td>
+          <td>Check the <em>Unresolved assumptions</em> count on the project panel. Non-blocking
+          questions become inline <code>ASSUMPTION</code> markers, not silent changes.</td></tr>
+        <tr><td>A propagation job stuck or cancelled</td>
+          <td>Check the project's token budget — low budgets cancel remaining jobs. Letters or a
+          fatal error also halt a wave without touching applied artifacts.</td></tr>
+        <tr><td>Git is missing on this machine</td>
+          <td>Managed projects require git. Install it and restart; until then projects will warn
+          but ordinary chat/folders keep working.</td></tr>
       </tbody>
     </table>
 
