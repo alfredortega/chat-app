@@ -84,16 +84,15 @@ def decrypt_val(val: str) -> str:
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     # Only emit PRAGMAs for sqlite connections
-    if type(dbapi_connection).__module__ != "sqlite3":
-        return
-    try:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.close()
-    except Exception:
-        pass
+    if type(dbapi_connection).__name__ == "Connection" or "sqlite" in str(type(dbapi_connection)):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+        except Exception:
+            pass
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -708,7 +707,6 @@ def init_db(app=None):
         with app.app_context():
             db.create_all()
             _ensure_archived_columns()
-            _ensure_folder_project_columns()
             _seed_personas_and_settings()
             _ensure_api_key_column_capacity()
             migrate_existing_api_keys()
@@ -716,7 +714,6 @@ def init_db(app=None):
     else:
         db.create_all()
         _ensure_archived_columns()
-        _ensure_folder_project_columns()
         _seed_personas_and_settings()
         _ensure_api_key_column_capacity()
         migrate_existing_api_keys()
@@ -728,35 +725,6 @@ def _ensure_repair_watermark():
     if not existing:
         db.session.add(Setting(key="tool_call_repair_version", value="1"))
         db.session.commit()
-
-
-# Folders columns added by the project (C07) feature. Kept in sync with the
-# Folder model so existing SQLite and MySQL databases self-heal on startup.
-_FOLDER_PROJECT_COLUMNS = [
-    ("kind", "VARCHAR(50) NOT NULL DEFAULT 'folder'"),
-    ("workspace_dir", "VARCHAR(512) NOT NULL DEFAULT ''"),
-    ("template_id", "VARCHAR(100) NOT NULL DEFAULT ''"),
-    ("propagation_mode", "VARCHAR(50) NOT NULL DEFAULT 'off'"),
-    ("next_req_seq", "INTEGER NOT NULL DEFAULT 1"),
-    ("token_budget", "INTEGER NOT NULL DEFAULT 0"),
-    ("ba_conversation_id", "INTEGER NULL"),
-]
-
-
-def _ensure_column(table: str, column: str, ddl: str):
-    try:
-        inspector = inspect(db.engine)
-        columns = [c["name"] for c in inspector.get_columns(table)]
-    except Exception:
-        return
-    if column not in columns:
-        db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
-        db.session.commit()
-
-
-def _ensure_folder_project_columns():
-    for column, ddl in _FOLDER_PROJECT_COLUMNS:
-        _ensure_column("folders", column, ddl)
 
 
 def _ensure_archived_columns():
