@@ -4,6 +4,7 @@ file_handler.py — upload storage, text extraction, and size validation.
 
 import csv
 import os
+import threading
 import time
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -19,8 +20,20 @@ HARD_LIMIT = 500_000
 # Cache TTL for linked‑folder scans (seconds)
 CACHE_TTL = 60
 
+# How long extracted linked-folder content stays reusable even when the
+# mtime/size fingerprint matches. Guards against filesystems with coarse
+# mtime resolution; real changes invalidate via the fingerprint much sooner.
+LINKED_CONTENT_TTL = 300
+
 # Simple in‑process cache for linked‑folder scans: {folder_path: (file_entries, timestamp)}
 _linked_folder_cache: dict = {}
+
+# Content cache for linked-folder reads:
+# {folder_path: (fingerprint, [(entry, text, truncated), ...], timestamp)}
+# Fingerprint = per-file (rel_path, size, mtime_ns) so a rebuilt context is
+# skipped whenever nothing changed on disk — this is the per-turn hot path.
+_linked_context_cache: dict = {}
+_linked_context_lock = threading.Lock()
 
 ALLOWED_EXTENSIONS = {
     ".txt", ".md", ".markdown",
@@ -220,12 +233,56 @@ def scan_linked_folder(folder_path: str) -> list[dict]:
     return results
 
 
+def _linked_folder_fingerprint(file_entries: list[dict]) -> tuple:
+    """
+    Cheap fingerprint of a linked folder's files: (rel_path, size, mtime_ns).
+
+    stat-based only — no file contents are read, so this is safe to compute on
+    every chat turn to decide whether a cached context is still valid.
+    """
+    fingerprint = []
+    for entry in file_entries:
+        try:
+            st = os.stat(entry["abs_path"])
+            fingerprint.append((entry["rel_path"], st.st_size, st.st_mtime_ns))
+        except OSError:
+            fingerprint.append((entry["rel_path"], None, None))
+    return tuple(fingerprint)
+
+
+def _cached_read_entries(folder_path: str, file_entries: list[dict]) -> list[tuple]:
+    """
+    Read all ``file_entries`` from disk, memoised by an mtime/size fingerprint.
+
+    Returns a list of ``(entry, text, truncated)`` tuples. When no file has
+    changed since the last call the previously extracted content is reused,
+    which avoids re-reading (and re-parsing, e.g. PDF/DOCX) the whole folder
+    on every chat turn.
+    """
+    fingerprint = _linked_folder_fingerprint(file_entries)
+    now = time.time()
+
+    with _linked_context_lock:
+        cached = _linked_context_cache.get(folder_path)
+        if cached and cached[0] == fingerprint and now - cached[2] < LINKED_CONTENT_TTL:
+            return cached[1]
+
+    results = []
+    for entry in file_entries:
+        text, truncated = extract_text(entry["abs_path"], entry["filename"])
+        results.append((entry, text, truncated))
+
+    with _linked_context_lock:
+        _linked_context_cache[folder_path] = (fingerprint, results, now)
+    return results
+
+
 def build_linked_folder_context(
     linked_folders: list[dict],
     uploaded_files: list[dict],
 ) -> tuple[str, int]:
     """
-    Read all files from linked folders/files live from disk.
+    Read all files from linked folders/files, memoised on disk fingerprints.
     Each linked entry may point to a directory or an individual file.
     Linked files take priority over uploaded files with the same basename.
     Returns (context_str, total_char_count).
@@ -254,7 +311,8 @@ def build_linked_folder_context(
             # A single linked file — emit it directly without a folder wrapper.
             entry = file_entries[0]
             linked_basenames.add(entry["filename"].lower())
-            text, truncated = extract_text(entry["abs_path"], entry["filename"])
+            cached = _cached_read_entries(folder_path, file_entries)
+            text, truncated = cached[0][1], cached[0][2]
             total_chars += len(text)
             footer = "--- END OF FILE ---"
             if truncated:
@@ -265,9 +323,8 @@ def build_linked_folder_context(
             continue
 
         parts = [f"--- LINKED FOLDER: {folder_path} ({len(file_entries)} files) ---\n"]
-        for entry in file_entries:
+        for entry, text, truncated in _cached_read_entries(folder_path, file_entries):
             linked_basenames.add(entry["filename"].lower())
-            text, truncated = extract_text(entry["abs_path"], entry["filename"])
             total_chars += len(text)
             header = f"  -- FILE: {entry['rel_path']} --"
             footer = "  -- END OF FILE --"
@@ -278,8 +335,7 @@ def build_linked_folder_context(
         folder_sections.append("\n\n".join(parts))
 
     context = (
-        "The following linked folders and files are available for reference "
-        "(content is read live from disk):\n\n"
+        "The following linked folders and files are available for reference:\n\n"
         + "\n\n".join(folder_sections)
     )
 

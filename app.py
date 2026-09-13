@@ -34,7 +34,7 @@ import database as db
 from tools import TOOLS, execute_tool_call
 from file_handler import (
     ensure_upload_dir, allowed_extension, extract_text,
-    build_file_context, build_linked_folder_context,
+    build_linked_folder_context,
     scan_linked_folder, WARN_THRESHOLD,
 )
 from chat_service import run_chat_turn, sse_event
@@ -69,11 +69,15 @@ def create_app(config=None):
     db.db.init_app(app_inst)
     db.init_db(app_inst)
 
-    app_inst.register_blueprint(app)
+    app_inst.register_blueprint(legacy_bp)
 
     # Phase 4: project blueprint.
     from routes.projects import projects_bp
     app_inst.register_blueprint(projects_bp)
+
+    # Extracted legacy groups.
+    from routes.research import research_bp
+    app_inst.register_blueprint(research_bp)
 
     # Phase 4 (C20): worker startup wiring. Starts exactly one daemon worker
     # thread through the application factory.
@@ -86,7 +90,7 @@ def create_app(config=None):
 
     return app_inst
 
-app = Blueprint("legacy", __name__)
+legacy_bp = Blueprint("legacy", __name__)
 
 
 def get_client(endpoint: dict = None) -> OpenAI:
@@ -144,14 +148,14 @@ def _endpoint_for_conversation(conv: dict) -> dict | None:
 
 # ── Static ─────────────────────────────────────────────────────────────────────
 
-@app.route("/")
+@legacy_bp.route("/")
 def index():
     return send_from_directory(current_app.static_folder, "index.html")
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 
-@app.route("/api/models", methods=["GET"])
+@legacy_bp.route("/api/models", methods=["GET"])
 def get_models():
     try:
         # Allow the caller to request models for a specific endpoint.
@@ -189,12 +193,12 @@ def _public_endpoint(ep: dict) -> dict:
     return out
 
 
-@app.route("/api/endpoints", methods=["GET"])
+@legacy_bp.route("/api/endpoints", methods=["GET"])
 def list_endpoints():
     return jsonify([_public_endpoint(e) for e in db.list_endpoints()])
 
 
-@app.route("/api/endpoints", methods=["POST"])
+@legacy_bp.route("/api/endpoints", methods=["POST"])
 def create_endpoint():
     data = request.get_json(force=True)
     name     = (data.get("name") or "").strip()
@@ -211,7 +215,7 @@ def create_endpoint():
     return jsonify(_public_endpoint(ep)), 201
 
 
-@app.route("/api/endpoints/<int:endpoint_id>", methods=["PUT"])
+@legacy_bp.route("/api/endpoints/<int:endpoint_id>", methods=["PUT"])
 def update_endpoint(endpoint_id):
     ep = db.get_endpoint(endpoint_id)
     if not ep:
@@ -238,7 +242,7 @@ def update_endpoint(endpoint_id):
     return jsonify(_public_endpoint(updated))
 
 
-@app.route("/api/endpoints/<int:endpoint_id>", methods=["DELETE"])
+@legacy_bp.route("/api/endpoints/<int:endpoint_id>", methods=["DELETE"])
 def delete_endpoint(endpoint_id):
     ep = db.get_endpoint(endpoint_id)
     if not ep:
@@ -249,7 +253,7 @@ def delete_endpoint(endpoint_id):
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
-@app.route("/api/settings", methods=["GET"])
+@legacy_bp.route("/api/settings", methods=["GET"])
 def get_settings():
     return jsonify({
         "output_dir":     db.get_setting("output_dir")     or "",
@@ -257,7 +261,7 @@ def get_settings():
     })
 
 
-@app.route("/api/settings", methods=["PUT"])
+@legacy_bp.route("/api/settings", methods=["PUT"])
 def update_settings():
     data = request.get_json(force=True)
     if "output_dir" in data:
@@ -267,7 +271,7 @@ def update_settings():
     return jsonify({"ok": True})
 
 
-@app.route("/api/settings/reset", methods=["POST"])
+@legacy_bp.route("/api/settings/reset", methods=["POST"])
 def reset_settings():
     """Reset the endpoint default model,
     browser starting path and default output folder to empty."""
@@ -275,55 +279,7 @@ def reset_settings():
     return jsonify({"ok": True, "settings": result})
 
 
-# ── Research sources ──────────────────────────────────────────────────────────
-
-@app.route("/api/research-sources", methods=["GET"])
-def list_research_sources():
-    return jsonify(db.list_research_sources())
-
-
-@app.route("/api/research-sources", methods=["POST"])
-def create_research_source():
-    data = request.get_json(force=True)
-    name = (data.get("name") or "").strip()
-    url = (data.get("url") or "").strip().rstrip("/")
-    if not name or not url:
-        return jsonify({"error": "name and url are required"}), 400
-    if not url.startswith(("https://", "http://")):
-        return jsonify({"error": "url must start with http:// or https://"}), 400
-    return jsonify(db.create_research_source(name, url, bool(data.get("enabled", True)))), 201
-
-
-@app.route("/api/research-sources/<int:source_id>", methods=["PUT"])
-def update_research_source(source_id):
-    source = db.get_research_source(source_id)
-    if not source:
-        return jsonify({"error": "Not found"}), 404
-    data = request.get_json(force=True)
-    name = data.get("name")
-    url = data.get("url")
-    if isinstance(url, str):
-        url = url.strip().rstrip("/")
-        if not url.startswith(("https://", "http://")):
-            return jsonify({"error": "url must start with http:// or https://"}), 400
-    updated = db.update_research_source(
-        source_id,
-        name=name.strip() if isinstance(name, str) else None,
-        url=url,
-        enabled=bool(data["enabled"]) if "enabled" in data else None,
-    )
-    return jsonify(updated)
-
-
-@app.route("/api/research-sources/<int:source_id>", methods=["DELETE"])
-def delete_research_source(source_id):
-    if not db.get_research_source(source_id):
-        return jsonify({"error": "Not found"}), 404
-    db.delete_research_source(source_id)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/open-output-dir", methods=["POST"])
+@legacy_bp.route("/api/open-output-dir", methods=["POST"])
 def open_output_dir():
     """Open the active conversation's effective output folder locally."""
     data = request.get_json(silent=True) or {}
@@ -356,12 +312,12 @@ def open_output_dir():
 
 # ── Conversations ──────────────────────────────────────────────────────────────
 
-@app.route("/api/conversations", methods=["GET"])
+@legacy_bp.route("/api/conversations", methods=["GET"])
 def list_conversations():
     return jsonify(db.list_conversations())
 
 
-@app.route("/api/conversations", methods=["POST"])
+@legacy_bp.route("/api/conversations", methods=["POST"])
 def create_conversation():
     data = request.get_json(force=True)
     endpoint_id = data.get("endpoint_id") or None
@@ -380,7 +336,7 @@ def create_conversation():
     return jsonify(conv), 201
 
 
-@app.route("/api/conversations/<int:conv_id>", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>", methods=["GET"])
 def get_conversation(conv_id):
     conv = db.get_conversation(conv_id)
     if not conv:
@@ -389,7 +345,7 @@ def get_conversation(conv_id):
     return jsonify({**conv, "messages": messages})
 
 
-@app.route("/api/conversations/<int:conv_id>", methods=["PUT"])
+@legacy_bp.route("/api/conversations/<int:conv_id>", methods=["PUT"])
 def update_conversation(conv_id):
     conv = db.get_conversation(conv_id)
     if not conv:
@@ -430,7 +386,7 @@ def update_conversation(conv_id):
     return jsonify(db.get_conversation(conv_id))
 
 
-@app.route("/api/conversations/<int:conv_id>", methods=["DELETE"])
+@legacy_bp.route("/api/conversations/<int:conv_id>", methods=["DELETE"])
 def delete_conversation(conv_id):
     conv = db.get_conversation(conv_id)
     if not conv:
@@ -441,7 +397,7 @@ def delete_conversation(conv_id):
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
 
-@app.route("/api/conversations/<int:conv_id>/chat", methods=["POST"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/chat", methods=["POST"])
 def chat(conv_id):
     conv = db.get_conversation(conv_id)
     if not conv:
@@ -476,24 +432,15 @@ def chat(conv_id):
 
     client = get_client(endpoint)
 
-    def execute_and_persist_tool(fn_name, fn_args, output_dir):
-        """Execute tool and persist result to database."""
-        result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
-
-        # Persist tool result
-        db.add_message(
-            conv_id,
-            role="tool",
-            content=result["result"],
-            tool_call_id=tool_call_id,
-        )
-        return result
-
     def generate():
         """Stream SSE events back to the browser."""
         # Send updated title if this was the first message
         if len(user_messages) == 1:
             yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
+
+        # Disclose what context was injected for this message (scope/tokens/warn)
+        from conversation_context import build_conversation_context
+        yield sse_event({"type": "scope", "meta": build_conversation_context(conv, conv_id)[1]})
 
         tools = TOOLS if tools_on else None
 
@@ -575,7 +522,7 @@ def chat(conv_id):
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
-@app.route("/api/conversations/<int:conv_id>/regenerate", methods=["POST"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/regenerate", methods=["POST"])
 def regenerate(conv_id):
     """
     Delete the last assistant message (and any preceding tool messages) then
@@ -606,6 +553,10 @@ def regenerate(conv_id):
 
     def generate():
         tools = TOOLS if tools_on else None
+
+        # Disclose what context was injected for this message (scope/tokens/warn)
+        from conversation_context import build_conversation_context
+        yield sse_event({"type": "scope", "meta": build_conversation_context(conv, conv_id)[1]})
 
         def execute_tool_fn(fn_name, fn_args, output_dir):
             result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
@@ -677,7 +628,7 @@ def regenerate(conv_id):
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
-@app.route("/api/conversations/<int:conv_id>/messages/<int:msg_id>", methods=["PUT"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/messages/<int:msg_id>", methods=["PUT"])
 def edit_message(conv_id, msg_id):
     """Edit a user message and delete all subsequent messages so the conversation can be re-sent."""
     conv = db.get_conversation(conv_id)
@@ -691,7 +642,7 @@ def edit_message(conv_id, msg_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/conversations/<int:conv_id>/search", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/search", methods=["GET"])
 def search_conversation(conv_id):
     """Search messages in a conversation by keyword."""
     query = request.args.get("q", "").strip().lower()
@@ -702,7 +653,7 @@ def search_conversation(conv_id):
     return jsonify(results)
 
 
-@app.route("/api/search", methods=["GET"])
+@legacy_bp.route("/api/search", methods=["GET"])
 def search_all():
     """Search across all conversations by keyword. Returns matching conversations with snippet."""
     query = request.args.get("q", "").strip().lower()
@@ -712,7 +663,7 @@ def search_all():
     return jsonify(results)
 
 
-@app.route("/api/conversations/<int:conv_id>/token-count", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/token-count", methods=["GET"])
 def token_count(conv_id):
     """Return an estimated token count for the current conversation context."""
     conv = db.get_conversation(conv_id)
@@ -739,7 +690,7 @@ def token_count(conv_id):
     })
 
 
-@app.route("/api/conversations/<int:conv_id>/files/<int:file_id>/preview", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/files/<int:file_id>/preview", methods=["GET"])
 def preview_file(conv_id, file_id):
     """Return the extracted text content of an uploaded file for preview."""
     record = db.get_conv_file(file_id)
@@ -756,12 +707,12 @@ def preview_file(conv_id, file_id):
 
 # ── Personas ───────────────────────────────────────────────────────────────────
 
-@app.route("/api/personas", methods=["GET"])
+@legacy_bp.route("/api/personas", methods=["GET"])
 def list_personas():
     return jsonify(db.list_personas())
 
 
-@app.route("/api/personas", methods=["POST"])
+@legacy_bp.route("/api/personas", methods=["POST"])
 def create_persona():
     data = request.get_json(force=True)
     name   = data.get("name", "").strip()
@@ -775,7 +726,7 @@ def create_persona():
     return jsonify(persona), 201
 
 
-@app.route("/api/personas/<int:persona_id>", methods=["PUT"])
+@legacy_bp.route("/api/personas/<int:persona_id>", methods=["PUT"])
 def update_persona(persona_id):
     persona = db.get_persona(persona_id)
     if not persona:
@@ -790,7 +741,7 @@ def update_persona(persona_id):
     return jsonify(db.get_persona(persona_id))
 
 
-@app.route("/api/personas/<int:persona_id>", methods=["DELETE"])
+@legacy_bp.route("/api/personas/<int:persona_id>", methods=["DELETE"])
 def delete_persona(persona_id):
     persona = db.get_persona(persona_id)
     if not persona:
@@ -801,14 +752,14 @@ def delete_persona(persona_id):
 
 # ── Conversation files ─────────────────────────────────────────────────────────
 
-@app.route("/api/conversations/<int:conv_id>/files", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/files", methods=["GET"])
 def list_files(conv_id):
     if not db.get_conversation(conv_id):
         return jsonify({"error": "Not found"}), 404
     return jsonify(db.list_conv_files(conv_id))
 
 
-@app.route("/api/conversations/<int:conv_id>/files", methods=["POST"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/files", methods=["POST"])
 def upload_file(conv_id):
     if not db.get_conversation(conv_id):
         return jsonify({"error": "Conversation not found"}), 404
@@ -857,7 +808,7 @@ def upload_file(conv_id):
     }), 201
 
 
-@app.route("/api/conversations/<int:conv_id>/files/<int:file_id>", methods=["DELETE"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/files/<int:file_id>", methods=["DELETE"])
 def delete_file(conv_id, file_id):
     record = db.get_conv_file(file_id)
     if not record or record["conversation_id"] != conv_id:
@@ -876,7 +827,7 @@ def delete_file(conv_id, file_id):
 
 # ── Folder browser ─────────────────────────────────────────────────────────────
 
-@app.route("/api/browse")
+@legacy_bp.route("/api/browse")
 def browse():
     """
     Return the contents of a directory one level at a time.
@@ -938,7 +889,7 @@ def browse():
 
 # ── Linked folders ─────────────────────────────────────────────────────────────
 
-@app.route("/api/conversations/<int:conv_id>/linked-folders", methods=["GET"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/linked-folders", methods=["GET"])
 def list_linked_folders(conv_id):
     if not db.get_conversation(conv_id):
         return jsonify({"error": "Not found"}), 404
@@ -955,7 +906,7 @@ def list_linked_folders(conv_id):
     return jsonify(result)
 
 
-@app.route("/api/conversations/<int:conv_id>/linked-folders", methods=["POST"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/linked-folders", methods=["POST"])
 def add_linked_folder(conv_id):
     if not db.get_conversation(conv_id):
         return jsonify({"error": "Conversation not found"}), 404
@@ -992,7 +943,7 @@ def add_linked_folder(conv_id):
     }), 201
 
 
-@app.route("/api/conversations/<int:conv_id>/linked-folders/<int:folder_id>", methods=["DELETE"])
+@legacy_bp.route("/api/conversations/<int:conv_id>/linked-folders/<int:folder_id>", methods=["DELETE"])
 def delete_linked_folder(conv_id, folder_id):
     record = db.get_linked_folder(folder_id)
     if not record or record["conversation_id"] != conv_id:
@@ -1001,7 +952,7 @@ def delete_linked_folder(conv_id, folder_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/purge", methods=["POST"])
+@legacy_bp.route("/api/purge", methods=["POST"])
 def purge_all():
     """Delete all conversations, messages, uploaded files and linked folders."""
     summary = db.purge_all_conversations()
@@ -1010,12 +961,12 @@ def purge_all():
 
 # ── Folders ────────────────────────────────────────────────────────────────────
 
-@app.route("/api/folders", methods=["GET"])
+@legacy_bp.route("/api/folders", methods=["GET"])
 def list_folders():
     return jsonify(db.list_folders())
 
 
-@app.route("/api/folders", methods=["POST"])
+@legacy_bp.route("/api/folders", methods=["POST"])
 def create_folder():
     data = request.get_json(force=True)
     name = (data.get("name") or "").strip()
@@ -1023,13 +974,16 @@ def create_folder():
     if not name:
         return jsonify({"error": "name is required"}), 400
     if code_folder:
-        folder = db.create_code_folder(name)
+        try:
+            folder = db.create_project_team(name)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
     else:
         folder = db.create_folder(name)
     return jsonify(folder), 201
 
 
-@app.route("/api/folders/<int:folder_id>", methods=["PUT"])
+@legacy_bp.route("/api/folders/<int:folder_id>", methods=["PUT"])
 def update_folder(folder_id):
     folder = db.get_folder(folder_id)
     if not folder:
@@ -1047,7 +1001,7 @@ def update_folder(folder_id):
     return jsonify(db.get_folder(folder_id))
 
 
-@app.route("/api/folders/<int:folder_id>", methods=["DELETE"])
+@legacy_bp.route("/api/folders/<int:folder_id>", methods=["DELETE"])
 def delete_folder(folder_id):
     folder = db.get_folder(folder_id)
     if not folder:
@@ -1058,7 +1012,7 @@ def delete_folder(folder_id):
 
 # ── Folder export / import ─────────────────────────────────────────────────────
 
-@app.route("/api/folders/<int:folder_id>/export", methods=["GET"])
+@legacy_bp.route("/api/folders/<int:folder_id>/export", methods=["GET"])
 def export_folder(folder_id):
     """
     Build a ZIP archive for a conversation folder and stream it back.
@@ -1144,7 +1098,7 @@ def export_folder(folder_id):
     )
 
 
-@app.route("/api/folders/import", methods=["POST"])
+@legacy_bp.route("/api/folders/import", methods=["POST"])
 def import_folder():
     """
     Accept a ZIP produced by export_folder(), recreate the folder, its
@@ -1256,15 +1210,19 @@ def import_folder():
 
 # ── Direct write_file endpoint (used by "Save as files" UI) ──────────────────
 
-@app.route("/api/write_file", methods=["POST"])
+@legacy_bp.route("/api/write_file", methods=["POST"])
 def write_file_direct():
     """Write content directly to a file path without going through the chat loop.
-    Fix #13: removed redundant local re-import of execute_tool_call and json."""
+    Fix #13: removed redundant local re-import of execute_tool_call and json.
+    The write is jailed to the configured output directory via _write_file."""
     data    = request.get_json(force=True)
     path    = data.get("path", "").strip()
     content = data.get("content", "")
     if not path:
         return jsonify({"success": False, "display": "No path provided", "result": "No path"}), 400
+    if not (db.get_setting("output_dir") or "").strip():
+        return jsonify({"success": False, "display": "No output directory configured",
+                        "result": "No output directory configured"}), 400
     result = execute_tool_call("write_file", json.dumps({"path": path, "content": content}))
     return jsonify(result)
 
@@ -1327,16 +1285,10 @@ def _build_system_prompt(conv: dict, conv_id: int, tools_on: bool) -> tuple[str,
         if persona:
             base_system += "\n\nPersona instructions: " + persona["prompt"]
 
-    conv_files     = db.list_conv_files(conv_id)
-    linked_folders = db.list_linked_folders(conv_id)
-    if linked_folders:
-        file_context, _ = build_linked_folder_context(linked_folders, conv_files)
-        if file_context:
-            base_system += "\n\n" + file_context
-    elif conv_files:
-        file_context = build_file_context(conv_files)
-        if file_context:
-            base_system += "\n\n" + file_context
+    from conversation_context import build_conversation_context
+    context_section, _scope_meta = build_conversation_context(conv, conv_id)
+    if context_section:
+        base_system += "\n\n" + context_section
 
     return base_system, output_dir
 

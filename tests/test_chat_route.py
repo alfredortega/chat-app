@@ -84,6 +84,26 @@ class TestChatRouteSse:
             roles = [m["role"] for m in db_module.get_messages(conv_id)]
         assert "user" in roles and "assistant" in roles
 
+    def test_chat_emits_scope_event(self, tmp_db, monkeypatch):
+        """Every chat stream opens with a 'scope' event describing the context
+        injected into the system prompt for that message."""
+        app, fake, conv_id = _setup_conversation(tmp_db)
+        fake.add_text_response("hi")
+        monkeypatch.setattr("app.get_client", lambda endpoint: fake)
+
+        with app.test_client() as client:
+            rv = client.post(
+                f"/api/conversations/{conv_id}/chat",
+                json={"message": "Hello"},
+            )
+            events = _parse_sse(rv.get_data(as_text=True))
+
+        scope = next((e for e in events if e["type"] == "scope"), None)
+        assert scope is not None
+        assert scope["meta"]["scope"] == "none"  # no linked folders / uploads
+        assert "chars" in scope["meta"]
+        assert "warn" in scope["meta"]
+
     def test_regenerate_streams_plain_response(self, tmp_db, monkeypatch):
         """POST /regenerate streams SSE too (same streaming fix)."""
         app, fake, conv_id = _setup_conversation(tmp_db)

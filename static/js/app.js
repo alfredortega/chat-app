@@ -1298,6 +1298,9 @@ const App = {
             let event;
             try { event = JSON.parse(raw); } catch { continue; }
             switch (event.type) {
+              case "scope":
+                Chat.appendScopeNote(event.meta || {});
+                break;
               case "token":
                 if (!streamBubble) streamBubble = Chat.createStreamingBubble();
                 streamBubble.append(event.content); break;

@@ -1,7 +1,11 @@
 # Agentic Persona Propagation — Implementation & Test Plan
 
-> **Status:** complete — all 35 delivery commits (C00, C01a–C31) are done and the
-> full test suite is green.
+> **Status: ARCHIVED.** All 35 delivery commits (C00, C01a–C31) are complete
+> and the full test suite is green. This file is kept for historical context;
+> schema evolution now lives in `migrations/` (Alembic) and live status in
+> the test suite under `tests/`. Do not treat the Delivery Commits table as
+> current work.
+>
 > **Owner:** —
 > **Last updated:** 2025-XX-XX (C01 split into C01a–C01d after three frozen
 > attempts; see 0.7)

@@ -705,12 +705,16 @@ def _write_file(args: dict, output_dir: str = None) -> dict:
             return {"success": False, "result": "No output directory configured.",
                     "display": "❌ No output directory configured for relative path."}
     else:
-        # Absolute path: must be within the allowed output directory.
-        if effective_dir:
-            norm_effective = os.path.normpath(effective_dir)
-            if not (path.startswith(norm_effective + os.sep) or path == norm_effective):
-                return {"success": False, "result": "Absolute path is outside the allowed output directory.",
-                        "display": "❌ Path traversal denied: absolute path must be under the output directory."}
+        # Absolute path: must be within the allowed output directory. When no
+        # output directory is configured, absolute writes are denied outright.
+        if not effective_dir:
+            return {"success": False,
+                    "result": "No output directory configured; absolute writes are denied.",
+                    "display": "❌ No output directory configured for absolute path."}
+        norm_effective = os.path.normpath(effective_dir)
+        if not (path.startswith(norm_effective + os.sep) or path == norm_effective):
+            return {"success": False, "result": "Absolute path is outside the allowed output directory.",
+                    "display": "❌ Path traversal denied: absolute path must be under the output directory."}
         path = os.path.normpath(path)
 
     try:

@@ -58,10 +58,10 @@ const Folders = {
                 <div class="form-check form-switch mb-3">
                   <input class="form-check-input" type="checkbox" role="switch" id="newFolderCodeSwitch" />
                   <label class="form-check-label text-secondary" for="newFolderCodeSwitch">
-                    Code Folder
+                    Project (managed team workspace)
                   </label>
                   <div class="form-text text-secondary">
-                    When enabled, creates a project structure with Analysis, Test Planning, UX Design, Data Modeling, and Project Management conversations linked to a system directory.
+                    Creates a managed project: a git-tracked workspace with role artifacts (Requirements, Design, Data, Test Cases, Security, Project Plan) and one conversation per role. The Business Analyst conversation becomes the project's Q&A inbox. Requires an output folder in Settings.
                   </div>
                 </div>
               </div>
@@ -111,9 +111,23 @@ const Folders = {
         modal.hide();
 
         try {
-          const folder = await API.createFolder(name, codeFolder);
-          this.add(folder);
-          Conversations._render();
+          // Managed projects use the canonical /api/projects path (template_id
+          // sdlc); plain folders keep the legacy /api/folders route.
+          const result = codeFolder
+            ? await API.createProject({ name, template_id: "sdlc" })
+            : await API.createFolder(name, false);
+          if (codeFolder) {
+            // The team of role conversations was created server-side, so
+            // reload both lists and expand the new project.
+            await Folders.load();
+            await Conversations.load();
+            if (result.project && result.project.id) {
+              Folders._collapsed.delete(result.project.id);
+            }
+          } else {
+            this.add(result);
+            Conversations._render();
+          }
         } catch (err) {
           alert("Failed to create folder: " + err.message);
         }

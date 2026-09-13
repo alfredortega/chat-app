@@ -1265,75 +1265,92 @@ def create_folder(name: str) -> dict:
     return f.to_dict()
 
 
-def create_code_folder(name: str) -> dict:
-    """Create a conversation folder with a code project structure.
-    
-    Creates:
-    - A conversation folder with the given name
-    - A system directory in the default output folder with the same name
-    - Sub-directories: Requirements, Test Planning, UX Design, Data Modeling, Project Management
-    - 5 conversations with specific personas, linked to the system directory
+def create_project_team(name: str, template_id: str = "sdlc", workspace_dir: str | None = None) -> dict:
+    """Create a managed project folder with a full team of role conversations.
+
+    Replaces the legacy ``create_code_folder``. Builds a git-tracked workspace
+    scaffolded from ``PROJECT_TEMPLATES`` (D8/D9), registers the artifacts and
+    dependency edges, then creates one conversation per role — persona set,
+    linked to the workspace root, output directory pointed at the role's
+    sub-folder. The Business Analyst conversation is designated as the
+    project's single Q&A inbox (D19 / §5.4).
+
+    ``workspace_dir`` may be supplied explicitly; otherwise it is derived from
+    the configured output folder + project name.
+
+    Returns:
+        A dict with the project folder, the created conversations, and the
+        registration summary from ``register_project_from_template``.
     """
     import os
-    
-    # Create the conversation folder first
+    from templates import get_template
+
+    template = get_template(template_id)
+    if not template:
+        raise ValueError(f"Unknown template: {template_id}")
+
+    if workspace_dir:
+        project_dir = workspace_dir
+    else:
+        # Validate the output folder up front so we never leak a plain folder on failure.
+        output_dir = get_setting("output_dir") or ""
+        if not output_dir:
+            raise ValueError("Default output folder is not configured. Please set it in Settings.")
+        output_dir = os.path.expanduser(output_dir.strip())
+        if not os.path.isdir(output_dir):
+            raise ValueError(f"Default output folder does not exist: {output_dir}")
+        project_dir = os.path.join(output_dir, name)
+
     folder = create_folder(name)
     folder_id = folder["id"]
-    
-    # Get the default output directory
-    output_dir = get_setting("output_dir") or ""
-    if not output_dir:
-        raise ValueError("Default output folder is not configured. Please set it in Settings.")
-    
-    output_dir = os.path.expanduser(output_dir.strip())
-    if not os.path.isdir(output_dir):
-        raise ValueError(f"Default output folder does not exist: {output_dir}")
-    
-    # Create the system directory with the folder name
-    system_dir = os.path.join(output_dir, name)
-    os.makedirs(system_dir, exist_ok=True)
-    
-    # Define the sub-folders and their corresponding conversation titles and personas
-    sub_folders = [
-        ("Requirements", "Analysis", "Business Analyst"),
-        ("Test Planning", "Test Planning", "QA/Tester"),
-        ("UX Design", "UX Design", "UX Designer"),
-        ("Data Modeling", "Data Modeling", "Database Developer"),
-        ("Project Management", "Project Management", "Project Manager"),
-    ]
-    
-    # Get persona IDs for each persona name
-    persona_map = {}
-    for _, _, persona_name in sub_folders:
-        if persona_name not in persona_map:
-            persona = Persona.query.filter_by(name=persona_name).first()
-            if persona:
-                persona_map[persona_name] = persona.id
-            else:
-                persona_map[persona_name] = None
-    
-    # Create sub-directories and conversations
-    for sub_folder_name, conv_title, persona_name in sub_folders:
-        sub_dir = os.path.join(system_dir, sub_folder_name)
+    summary = register_project_from_template(folder_id, template_id, project_dir)
+
+    # One conversation per role: persona, linked to the workspace root, output
+    # dir pointed at that role's sub-folder (derived from the template paths).
+    persona_by_name = {p.name: p.id for p in Persona.query.all()}
+    conversations = []
+    ba_conversation_id = None
+    seen_roles = set()
+    for spec in template.artifacts:
+        role = spec.role
+        if role in seen_roles:
+            continue
+        seen_roles.add(role)
+
+        sub_dir = os.path.join(project_dir, os.path.dirname(spec.rel_path))
         os.makedirs(sub_dir, exist_ok=True)
-        
-        # Create conversation with the appropriate persona
-        persona_id = persona_map.get(persona_name)
+
+        persona_name = template.role_to_persona.get(role)
+        persona_id = persona_by_name.get(persona_name)
         conv = create_conversation(
-            title=conv_title,
+            title=role,
             model_id="",
             persona_id=persona_id,
-            folder_id=folder_id
+            folder_id=folder_id,
         )
         conv_id = conv["id"]
-        
-        # Link the conversation to the system directory (parent)
-        add_linked_folder(conv_id, system_dir)
-        
-        # Set the conversation's output folder to its matching sub-folder
+
+        # Link the conversation to the workspace root and point its output
+        # directory at the role's sub-folder.
+        add_linked_folder(conv_id, project_dir)
         update_conversation(conv_id, output_dir=sub_dir)
-    
-    return folder
+        conversations.append(get_conversation(conv_id))
+
+        if role == "Business Analyst" and ba_conversation_id is None:
+            ba_conversation_id = conv_id
+
+    # Designate the BA conversation as the Q&A inbox (D19).
+    if ba_conversation_id is not None:
+        update_folder_project(folder_id, ba_conversation_id=ba_conversation_id)
+
+    return {
+        "project": get_folder(folder_id),
+        "conversations": conversations,
+        "workspace_dir": project_dir,
+        "ba_conversation_id": ba_conversation_id,
+        "artifacts_registered": summary["artifacts_registered"],
+        "edges_created": summary["edges_created"],
+    }
 
 
 def update_folder(folder_id: int, name: str = None, position: int = None, archived: bool = None):
@@ -1850,7 +1867,7 @@ def register_project_from_template(project_id: int, template_id: str, workspace_
                 spec.key,
                 spec.role,
             )
-            body = "## placeholder\n\n# %s\n\n_Placeholder content_\n" % spec.key
+            body = "# %s\n\n## placeholder\n\n_Authors: %s._\n" % (spec.key, spec.role)
             with open(file_path, 'w', encoding='utf-8') as fw:
                 fw.write(fm + body)
 
@@ -1967,36 +1984,6 @@ def get_project_artifact_graph(project_id: int) -> dict:
         "edges": edges,
         "depths": depths,
     }
-
-
-def _setup_default_dependencies(project_id: int, artifact_files: dict[str, str]) -> None:
-    """Set up default artifact dependencies based on the SDLC role graph."""
-    from database import ArtifactDep
-
-    key_map = artifact_files
-
-    # Clear existing deps
-    ArtifactDep.query.filter_by(project_id=project_id).delete()
-
-    # Define template deps (upstream -> downstream)
-    # Using artifact key names from the sdlc template
-    template_deps = [
-        ("BA-REQ", "DB-MODEL"),
-        ("BA-REQ", "UX-WIRE"),
-        ("BA-REQ", "SEC-RISK"),
-        ("DB-MODEL", "QA-PLAN"),
-        ("QA-PLAN", "PM-PLAN"),
-    ]
-
-    for upstream, downstream in template_deps:
-        if upstream in key_map and downstream in key_map:
-            dep = ArtifactDep(
-                project_id=project_id,
-                upstream_key=upstream,
-                downstream_key=downstream,
-            )
-            db.session.add(dep)
-    db.session.commit()
 
 
 def read_artifact_file(workspace_dir: str, rel_path: str) -> tuple[str, bool]:

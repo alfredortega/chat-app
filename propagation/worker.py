@@ -16,6 +16,7 @@ from database import (
     list_propagation_jobs,
     update_propagation_job,
     create_propagation_job,
+    run_with_session,
 )
 
 QUEUEABLE_STATES = ("pending", "queued")
@@ -117,12 +118,24 @@ def _depth_gated(project_id: int, change_id: int, depth: int) -> bool:
 
 
 class PropagationWorker:
-    """Poll the job table and execute jobs via an injected executor."""
+    """Poll the job table and execute jobs via an injected executor.
 
-    def __init__(self, app, executor=None, poll_interval: float = 0.2):
+    Polling is lazy: the loop runs fast while there is work to do and backs
+    off to ``idle_backoff`` seconds when the queue is empty, so an idle worker
+    does not hammer the database at ``poll_interval`` forever.
+    """
+
+    def __init__(
+        self,
+        app,
+        executor=None,
+        poll_interval: float = 0.2,
+        idle_backoff: float = 1.0,
+    ):
         self.app = app
         self.executor = executor or NoopExecutor()
         self.poll_interval = poll_interval
+        self.idle_backoff = idle_backoff
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -144,56 +157,59 @@ class PropagationWorker:
             self._thread = None
 
     def _run_loop(self) -> None:
+        delay = self.poll_interval
         while not self._stop_event.is_set():
-            if self._stop_event.wait(self.poll_interval):
+            if self._stop_event.wait(delay):
                 break
             try:
-                with self.app.app_context():
-                    self._tick()
+                busy = run_with_session(self.app, self._tick)
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
-                try:
-                    db.session.rollback()
-                    db.session.remove()
-                except Exception:
-                    pass
+                busy = False
+            delay = self.poll_interval if busy else self.idle_backoff
 
-    def _tick(self) -> None:
-        with self.app.app_context():
-            job = self._next_job()
-            if job is None:
-                return
-            job_id = job["id"]
-            change_id = job["change_id"]
-            depth = job["depth"]
-            project_id = self._project_id_for_change(change_id)
+    def _tick(self) -> bool:
+        """
+        Claim and run a single job.
 
-            # Attempts-based bounded retries.
-            attempts = job.get("attempts", 0)
-            if attempts >= MAX_ATTEMPTS:
-                update_propagation_job(job_id, state="failed", error="Max attempts exceeded")
-                return
+        Returns True when a job was processed (fast-poll again), False when
+        there was nothing to do or the job was depth-gated (back off).
+        """
+        job = self._next_job()
+        if job is None:
+            return False
+        job_id = job["id"]
+        change_id = job["change_id"]
+        depth = job["depth"]
+        project_id = self._project_id_for_change(change_id)
 
-            if not _depth_gated(project_id, change_id, depth):
-                # Release the job so it can be re-claimed later.
-                update_propagation_job(job_id, state="pending")
-                return
+        # Attempts-based bounded retries.
+        attempts = job.get("attempts", 0)
+        if attempts >= MAX_ATTEMPTS:
+            update_propagation_job(job_id, state="failed", error="Max attempts exceeded")
+            return True
 
-            try:
-                result = self.executor.execute(job)
-                update_propagation_job(
-                    job_id,
-                    state=result.get("state", "completed"),
-                    attempts=attempts + 1,
-                )
-            except Exception as exc:
-                update_propagation_job(
-                    job_id,
-                    state="failed",
-                    error=str(exc),
-                    attempts=attempts + 1,
-                )
+        if not _depth_gated(project_id, change_id, depth):
+            # Release the job so it can be re-claimed later.
+            update_propagation_job(job_id, state="pending")
+            return False
+
+        try:
+            result = self.executor.execute(job)
+            update_propagation_job(
+                job_id,
+                state=result.get("state", "completed"),
+                attempts=attempts + 1,
+            )
+        except Exception as exc:
+            update_propagation_job(
+                job_id,
+                state="failed",
+                error=str(exc),
+                attempts=attempts + 1,
+            )
+        return True
 
     def _next_job(self) -> dict | None:
         return _claim_job()

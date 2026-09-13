@@ -223,6 +223,39 @@ body {
   padding: 4px 0;
 }
 
+.inbox-badge {
+  display: inline-block;
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(13, 110, 253, 0.15);
+  border: 1px solid rgba(13, 110, 253, 0.4);
+  color: #6ba4ff;
+  margin-left: 2px;
+}
+
+.chat-scope-note {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  color: var(--app-muted, #8a8f9a);
+  padding: 2px 10px;
+  margin: 2px 0;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+
+.chat-scope-warn {
+  align-self: flex-start;
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  margin: 2px 0;
+  border-radius: 8px;
+  background: rgba(220, 130, 60, 0.12);
+  border: 1px solid rgba(220, 130, 60, 0.4);
+  color: #e0a052;
+}
+
 .tool-notification {
   display: inline-flex;
   align-items: center;

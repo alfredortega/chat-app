@@ -9,10 +9,12 @@
 
 flask==3.1.0
 flask-cors==5.0.0
+flask-sqlalchemy==3.1.1
 openai==1.82.0
+PyYAML==6.0.1
+alembic==1.20.0
 pypdf==5.1.0
 python-docx==1.1.2
 openpyxl==3.1.5
-flask-sqlalchemy==3.1.1
 pymysql==1.1.1
 cryptography==43.0.0

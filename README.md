@@ -13,7 +13,7 @@ A rich web-based chat application built on a Python Flask and SQLite backend, wi
 
 ## Projects & Automatic Propagation
 
-A managed project scaffolds seven artifacts across six roles. Each artifact lives in a git-tracked workspace and carries YAML front-matter; the requirements document uses stable `## REQ-nnn — Title` headings.
+A managed project scaffolds six artifacts across six roles. Each artifact lives in a git-tracked workspace and carries YAML front-matter; the requirements document uses stable `## REQ-nnn — Title` headings.
 
 The propagation pipeline is intentionally deterministic:
 
@@ -31,13 +31,17 @@ Example: changing `REQ-014` from "SQLite only" to "SQLite **and** MySQL via SQLA
 ```
 app.py                # Flask application factory + legacy routes
 chat_service.py       # Bounded, reusable chat/tool-loop service
+conversation_context.py # Single entry point for chat context (role-scoped / linked-folder)
 database.py           # SQLAlchemy models; artifact, change-event, job, issue tables
 file_handler.py       # Uploads, file context, scoped artifact context builder
 propagation/          # scanner, changes, impact, worker, agent, proposal, qa,
                       # notify, loop_guard, adopt, archive
 routes/projects.py    # Phase 4 project API blueprint
+routes/research.py    # Research-sources blueprint
 templates.py          # Project template registry + role->artifact edge expansion
 git_integration.py    # Git init/commit/diff/rollback for workspaces
+migrations/           # Alembic migration tooling (forward only — runtime
+                      # bootstrap still uses db.create_all() + self-heal)
 tests/                # pytest suite (unit + integration, no network)
 ```
 

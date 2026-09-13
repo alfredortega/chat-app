@@ -323,10 +323,16 @@ const Conversations = {
       : "";
 
     const archivedBadge = conv.archived ? ` <span class="archived-badge">Archived</span>` : "";
+    const parentFolder = conv.folder_id ? (typeof Folders !== "undefined" && Folders.getById(conv.folder_id)) : null;
+    const isInbox = parentFolder && parentFolder.ba_conversation_id &&
+      Number(parentFolder.ba_conversation_id) === Number(conv.id);
+    const inboxBadge = isInbox
+      ? ` <span class="inbox-badge" title="Project question inbox (BA)">inbox</span>`
+      : "";
 
     item.innerHTML = `
       <i class="bi bi-chat text-secondary flex-shrink-0" style="font-size:0.85rem"></i>
-      <span class="conv-title" title="${_esc(conv.title)}">${_esc(conv.title)}${archivedBadge}</span>
+      <span class="conv-title" title="${_esc(conv.title)}">${_esc(conv.title)}${archivedBadge}${inboxBadge}</span>
       <span class="conv-actions">
         <button class="btn-rename" title="Rename"><i class="bi bi-pencil"></i></button>
         <div class="dropdown d-inline">

@@ -97,26 +97,30 @@ def list_projects():
 
 @projects_bp.post("")
 def create_project():
-    """Create a folder (back-compatible) and, when template_id is provided,
-    register it as a managed project."""
+    """Create a managed project (folder + team workspace + role conversations).
+
+    The canonical project-creation path. ``template_id`` selects the project
+    template; ``workspace_dir`` is optional and defaults to
+    ``<output_dir>/<name>``. Without ``template_id`` this degrades to a plain
+    folder, back-compatible with the legacy flow.
+    """
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip()
     if not name:
         return api_error("name is required", 400)
 
-    folder = db.create_folder(name)
     template_id = data.get("template_id", "").strip()
     if not template_id:
         # Plain folder creation, back-compatible with the legacy flow.
-        return api_ok(folder, 201)
-
-    workspace = data.get("workspace_dir", "")
-    if not workspace:
-        return api_error("workspace_dir is required when template_id is set", 400)
+        return api_ok(db.create_folder(name), 201)
 
     try:
-        result = db.register_project_from_template(folder["id"], template_id, workspace)
-    except Exception as exc:
+        result = db.create_project_team(
+            name,
+            template_id=template_id,
+            workspace_dir=(data.get("workspace_dir") or "").strip() or None,
+        )
+    except ValueError as exc:
         return api_error(str(exc), 400)
     return api_ok(result, 201)
 

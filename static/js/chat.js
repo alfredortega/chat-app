@@ -45,6 +45,10 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Rendering the whole markdown buffer on every SSE token is wasteful; batch
+// renders at this interval and always flush before the bubble is finalised.
+const STREAM_RENDER_MS = 80;
+
 const Chat = {
   messagesArea: null,
 
@@ -175,19 +179,34 @@ const Chat = {
     this.scrollToBottom();
 
     let raw = "";
+    let lastRender = 0;
+    let pendingTimer = null;
+
+    const render = () => {
+      const html = parseMarkdown(raw);
+      el.innerHTML = (typeof html === "string") ? html : raw;
+      lastRender = Date.now();
+    };
+    const flush = () => {
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+      render();
+    };
 
     return {
       el,
       append(token) {
         raw += token;
-        // Show plain text while streaming — avoids broken mid-fence markdown
-        el.textContent = raw;
+        const now = Date.now();
+        if (now - lastRender >= STREAM_RENDER_MS) {
+          flush();
+        } else if (!pendingTimer) {
+          pendingTimer = setTimeout(() => { pendingTimer = null; render(); }, STREAM_RENDER_MS);
+        }
         Chat.scrollToBottom();
       },
       finalise() {
         el.classList.remove("streaming-cursor");
-        const html = parseMarkdown(raw);
-        el.innerHTML = (typeof html === "string") ? html : raw;
+        flush();
 
         // Add copy buttons to all code blocks
         Chat._addCopyButtons(el);
@@ -217,6 +236,30 @@ const Chat = {
         Chat.scrollToBottom();
       },
     };
+  },
+
+  appendScopeNote(meta) {
+    const m = meta || {};
+    const scopeLabels = {
+      role: m.role ? `Model sees: ${m.role} scope` : "Model sees: role scope",
+      linked_folder: "Model sees: linked workspace",
+      uploads: "Model sees: uploaded files",
+      none: "Model sees: chat only",
+    };
+    const label = scopeLabels[m.scope] || "Model sees: chat only";
+    const note = document.createElement("div");
+    note.className = "chat-scope-note";
+    note.textContent = `${label} · ${(m.chars || 0).toLocaleString()} chars`;
+    this.messagesArea.appendChild(note);
+
+    if (m.warn) {
+      const warn = document.createElement("div");
+      warn.className = "chat-scope-warn";
+      warn.textContent = `⚠ Large context (${(m.chars || 0).toLocaleString()} chars) — responses may be slow.`;
+      this.messagesArea.appendChild(warn);
+    }
+    this.scrollToBottom();
+    return note;
   },
 
   appendToolNotification(success, displayText, blockedUrl = "") {

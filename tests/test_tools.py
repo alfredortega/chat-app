@@ -298,6 +298,50 @@ class TestExecuteToolCallParameterPassing:
         # Should not crash on parameter acceptance
         assert "success" in result
 
+
+class TestWriteFileJail:
+    """write_file must never write outside the configured output directory."""
+
+    def test_absolute_write_without_output_dir_is_denied(self, monkeypatch):
+        """With no output dir configured, arbitrary absolute writes are blocked."""
+        import database as db_module
+        monkeypatch.setattr(db_module, "get_setting", lambda key: None)
+
+        with tempfile.NamedTemporaryFile() as tmp:
+            result = tools.execute_tool_call(
+                "write_file",
+                json.dumps({"path": tmp.name, "content": "evil"}),
+                context="chat",
+                output_dir=None,
+            )
+            assert result["success"] is False
+            assert "denied" in result["result"].lower() or "no output directory" in result["result"].lower()
+
+    def test_absolute_write_outside_output_dir_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            outside = os.path.join(tmp_dir, "..", "escape.txt")
+            outside = os.path.normpath(outside)
+            result = tools.execute_tool_call(
+                "write_file",
+                json.dumps({"path": outside, "content": "x"}),
+                context="chat",
+                output_dir=tmp_dir,
+            )
+            assert result["success"] is False
+            assert "outside" in result["result"].lower()
+
+    def test_absolute_write_inside_output_dir_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            inside = os.path.join(tmp_dir, "ok.txt")
+            result = tools.execute_tool_call(
+                "write_file",
+                json.dumps({"path": inside, "content": "x"}),
+                context="chat",
+                output_dir=tmp_dir,
+            )
+            assert result["success"] is True
+            assert os.path.exists(inside)
+
     def test_execute_tool_call_accepts_workspace_dir_param(self):
         """execute_tool_call accepts workspace_dir parameter without error."""
         with tempfile.TemporaryDirectory() as tmp_dir:

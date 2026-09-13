@@ -17,12 +17,39 @@ const ProjectPanel = {
     const issues = await API.getProjectIssues(projectId);
     const assumptions = await API.getProjectAssumptions(projectId);
     const requests = await API.listArtifactRequests(projectId);
+    let conversations = [];
+    try {
+      conversations = (await API.listConversations()).filter((c) => c.folder_id === projectId);
+    } catch (_) { /* panel still opens without the inbox list */ }
 
+    this._projectId = projectId;
     this._open = true;
     const el = document.getElementById("projectPanelContainer");
     if (!el) return;
-    el.innerHTML = this._render(data, changes, settings, issues, assumptions, requests);
+    el.innerHTML = this._render(data, changes, settings, issues, assumptions, requests, conversations);
+    this._wireInboxControls(el, conversations, settings);
     el.classList.remove("d-none");
+  },
+
+  _wireInboxControls(el, conversations, settings) {
+    const btn = el.querySelector("#btnSetBaInbox");
+    const sel = el.querySelector("#baInboxSelect");
+    if (!btn || !sel) return;
+    btn.addEventListener("click", async () => {
+      const convId = Number(sel.value);
+      if (!convId) return;
+      try {
+        await API.setBaConversation(this._projectId, convId);
+        if (typeof Folders !== "undefined" && Folders.list) {
+          const folder = Folders.list.find((f) => Number(f.id) === Number(this._projectId));
+          if (folder) folder.ba_conversation_id = convId;
+        }
+        await Folders.load();
+        ProjectPanel.open(this._projectId);
+      } catch (err) {
+        alert("Failed to set BA inbox: " + err.message);
+      }
+    });
   },
 
   close() {
@@ -66,9 +93,22 @@ const ProjectPanel = {
     return `<span class="status-badge ${cls}">${status}</span>`;
   },
 
-  _render(data, changes, settings, issues, assumptions, requests) {
+  _render(data, changes, settings, issues, assumptions, requests, conversations) {
     const rows = this._groupByRole(data.artifacts || []);
     const openQuestions = (issues || []).filter((i) => i.status === "open" && i.kind === "question");
+
+    const currentInbox = settings.ba_conversation_id;
+    const inboxOptions = (conversations || []).map((c) =>
+      `<option value="${c.id}" ${Number(c.id) === Number(currentInbox) ? "selected" : ""}>${_esc(c.title)}</option>`
+    ).join("") || `<option value="">No conversations in this project</option>`;
+    const conversationHtml = (conversations || []).length
+      ? `<select id="baInboxSelect" class="form-select form-select-sm border-secondary mb-1">
+           ${inboxOptions}
+         </select>
+         <button type="button" class="btn btn-sm btn-outline-secondary" id="btnSetBaInbox">
+           <i class="bi bi-inbox me-1"></i>Set as BA inbox
+         </button>`
+      : `<div class="text-secondary small">No conversations in this project yet.</div>`;
 
     const roleHtml = rows.map((row) => `
       <div class="project-role-group">
@@ -84,12 +124,23 @@ const ProjectPanel = {
           </div>`).join("")}
       </div>`).join("");
 
-    const changeHtml = (changes || []).map((c) => `
+    const changeHtml = (changes || []).map((c) => {
+      const jobs = c.jobs || [];
+      const done = jobs.filter((j) =>
+        ["completed", "applied", "proposed", "failed", "needs_input", "cancelled", "rejected"].includes(j.state)
+      ).length;
+      const jobLine = jobs.length
+        ? `<span class="project-change-jobs">${done}/${jobs.length} jobs done</span>`
+        : "";
+      const reqs = (c.changed_reqs || []).join(", ");
+      return `
       <div class="project-change-row">
         <span class="project-change-id">#${c.id}</span>
         <span class="project-change-summary">${(c.summary || "?").slice(0, 120)}</span>
-        <span class="project-change-reqs">${(c.changed_reqs || []).join(", ")}</span>
-      </div>`).join("") || "<div class='text-secondary small'>No change events yet.</div>";
+        ${reqs ? `<span class="project-change-reqs">${reqs}</span>` : ""}
+        ${jobLine}
+      </div>`;
+    }).join("") || "<div class='text-secondary small'>No change events yet.</div>";
 
     const issueHtml = (openQuestions || []).map((i) => `
       <div class="project-issue-row">
@@ -118,6 +169,9 @@ const ProjectPanel = {
           <span class="badge bg-warning text-dark">Unresolved assumptions: ${assumptions.unresolved_count || 0}</span>
           <span class="badge bg-secondary">Open questions: ${openQuestions.length}</span>
         </div>
+
+        <h6 class="mt-3">Question inbox (BA)</h6>
+        ${conversationHtml}
 
         <h6 class="mt-3">Artifacts (grouped by role)</h6>
         ${roleHtml}
