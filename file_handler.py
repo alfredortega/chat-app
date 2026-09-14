@@ -4,6 +4,7 @@ file_handler.py — upload storage, text extraction, and size validation.
 
 import csv
 import os
+import re
 import threading
 import time
 
@@ -14,8 +15,15 @@ UPLOAD_ROOT = os.path.join(os.path.dirname(__file__), "uploads")
 # Warn the user if total extracted text exceeds this many characters (~40k tokens)
 WARN_THRESHOLD = 150_000
 
-# Hard-truncate injected content at this limit to avoid oversized API requests
+# Hard-truncate a single file's injected content at this limit to avoid
+# oversized API requests
 HARD_LIMIT = 500_000
+
+# Aggregate budget for the whole injected file context (uploads + linked
+# folders). When the combined content exceeds this, only the largest files are
+# included in full and the rest are downsampled to a structural preview, so a
+# conversation can never blow an entire model context window on file dumps.
+MAX_CONTEXT_CHARS = 100_000
 
 # Cache TTL for linked‑folder scans (seconds)
 CACHE_TTL = 60
@@ -24,6 +32,10 @@ CACHE_TTL = 60
 # mtime/size fingerprint matches. Guards against filesystems with coarse
 # mtime resolution; real changes invalidate via the fingerprint much sooner.
 LINKED_CONTENT_TTL = 300
+
+# Same TTL for the uploaded-file content cache (avoid re-parsing PDF/DOCX on
+# every chat turn).
+UPLOAD_CONTENT_TTL = 300
 
 # Simple in‑process cache for linked‑folder scans: {folder_path: (file_entries, timestamp)}
 _linked_folder_cache: dict = {}
@@ -34,6 +46,13 @@ _linked_folder_cache: dict = {}
 # skipped whenever nothing changed on disk — this is the per-turn hot path.
 _linked_context_cache: dict = {}
 _linked_context_lock = threading.Lock()
+
+# Content cache for uploaded-file reads:
+# {disk_path: (fingerprint, text, truncated, timestamp)}
+# Uploads live under the conversation upload dir with unique uuid filenames,
+# so the (size, mtime) fingerprint is enough to avoid re-parsing PDF/DOCX on
+# every chat turn just like the linked-folder cache does.
+_upload_content_cache: dict = {}
 
 ALLOWED_EXTENSIONS = {
     ".txt", ".md", ".markdown",
@@ -149,26 +168,189 @@ def _extract_csv(filepath: str) -> str:
 
 # ── Context injection ──────────────────────────────────────────────────────────
 
-def build_file_context(files: list[dict]) -> str:
+def _cached_upload_read(record: dict) -> tuple[str, bool]:
+    """
+    Read an uploaded file's extracted text, memoised by a (size, mtime)
+    fingerprint so PDF/DOCX/XLSX are not re-parsed on every chat turn.
+    """
+    path = record.get("disk_path", "")
+    try:
+        st = os.stat(path)
+        fingerprint = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        fingerprint = None
+    now = time.time()
+    cached = _upload_content_cache.get(path)
+    if cached and cached[0] == fingerprint and now - cached[3] < UPLOAD_CONTENT_TTL:
+        return cached[1], cached[2]
+    text, truncated = extract_text(path, record.get("original_name", os.path.basename(path)))
+    _upload_content_cache[path] = (fingerprint, text, truncated, now)
+    return text, truncated
+
+
+def evict_upload_cache(path: str) -> None:
+    """Drop cached content for an uploaded file that is being deleted."""
+    _upload_content_cache.pop(path, None)
+
+
+_SIGNATURE_RE = re.compile(
+    r"^\s*(#{1,6}\s|def\s|class\s|function\s|export\s+(default\s+)?(function|class|const)|"
+    r"import\s|from\s|const\s|let\s|var\s|@|-\s|\d+\.\s|=>)",
+    re.MULTILINE,
+)
+
+
+def _smart_preview(text: str, max_chars: int) -> tuple[str, int]:
+    """
+    Downsample ``text`` to at most ``max_chars`` while keeping the parts of a
+    file that carry structure: the opening lines (headers, imports, defs) plus
+    every heading/signature line. Returns ``(preview, omitted_chars)``.
+    """
+    if len(text) <= max_chars:
+        return text, 0
+
+    lines = text.splitlines(keepends=True)
+    selected: list[tuple[int, str]] = []
+    seen: set[int] = set()
+
+    for i in range(min(25, len(lines))):
+        seen.add(i)
+        selected.append((i, lines[i]))
+    for i, line in enumerate(lines):
+        if i in seen:
+            continue
+        if _SIGNATURE_RE.match(line):
+            selected.append((i, line))
+            seen.add(i)
+
+    selected.sort()
+    assembled = "".join(line for _, line in selected)
+    if len(assembled) > max_chars:
+        # Fallback: head truncation on the last line boundary within budget.
+        head: list[str] = []
+        size = 0
+        for line in lines:
+            if size + len(line) > max_chars:
+                break
+            head.append(line)
+            size += len(line)
+        omitted = len(text) - size
+        return "".join(head) + f"\n… [{omitted:,} chars omitted]\n", omitted
+
+    omitted = len(text) - len(assembled)
+    if omitted > 0:
+        assembled += f"\n… [{omitted:,} chars omitted — original is {len(text):,} chars]\n"
+    return assembled, omitted
+
+
+def _pack_sections(blocks: list[dict], max_chars: int, preview_only: bool = False) -> list[str]:
+    """
+    Bound a list of file blocks to ``max_chars`` total characters.
+
+    Each block has the shape:
+        {"label": str, "text": str, "footer": str, "chars": int}
+    where ``chars`` is the length of ``text``.
+
+    When everything fits, the verbatim sections are returned. When it does not,
+    an index of every file is prepended, the largest files are kept in full,
+    and the remaining files are downsampled with ``_smart_preview`` so the
+    model always knows every file exists without paying for all of its bytes.
+
+    With ``preview_only=True`` every block is downsampled (never injected in
+    full) — the index makes each file discoverable and the caller arranges for
+    content to be pulled on demand (e.g. via the ``read_named_file`` tool).
+    """
+    if not blocks:
+        return [], 0
+
+    full = [f"{b['label']}\n{b['text']}\n{b['footer']}" for b in blocks]
+    total = sum(len(s) for s in full)
+    if total <= max_chars and not preview_only:
+        return full, total
+
+    index = "# CONTEXT INDEX — every referenced file, with its full size:\n" + "\n".join(
+        f"- {b['label']}  ({b['chars']:,} chars)" for b in blocks
+    )
+
+    n = len(blocks)
+
+    if preview_only:
+        cap = max(400, max_chars // max(1, n))
+        out = [index]
+        for b in blocks:
+            preview, omitted = _smart_preview(b["text"], cap)
+            footer = b["footer"]
+            if omitted:
+                footer += f" (preview: {omitted:,} chars omitted)"
+            out.append(f"{b['label']}\n{preview}\n{footer}")
+        final = "\n\n".join(out)
+        if len(final) > max_chars:
+            final = final[:max_chars]
+        total = len(final)
+        return [final], total
+
+    # Reserve room for the index plus a small preview floor per remaining file.
+    reserve = len(index) + 250 * n
+    order = sorted(range(n), key=lambda i: blocks[i]["chars"], reverse=True)
+    included: set[int] = set()
+    running = 0
+    for i in order:
+        if running + len(full[i]) <= max_chars - reserve:
+            included.add(i)
+            running += len(full[i])
+
+    remaining = [i for i in range(n) if i not in included]
+    leftover = max(0, max_chars - running - len(index) - 100)
+    preview_cap = max(250, leftover // max(1, len(remaining)))
+
+    out = [index]
+    for i in range(n):
+        b = blocks[i]
+        if i in included:
+            out.append(full[i])
+        else:
+            preview, omitted = _smart_preview(b["text"], preview_cap)
+            footer = b["footer"]
+            if omitted:
+                footer += f" (preview: {omitted:,} chars omitted)"
+            out.append(f"{b['label']}\n{preview}\n{footer}")
+
+    final = "\n\n".join(out)
+    if len(final) > max_chars:
+        final = final[:max_chars]
+    total = len(final)
+    return [final], total
+
+
+def build_file_context(files: list[dict], max_chars: int = MAX_CONTEXT_CHARS) -> str:
     """
     Given a list of uploaded file dicts (from DB), return a formatted string to
     inject into the system prompt so the model can reference the files.
+
+    The combined contents are bounded by ``max_chars`` (default
+    ``MAX_CONTEXT_CHARS``): when they exceed it, the largest files are included
+    in full and the rest are downsampled to structural previews behind an index.
     """
     if not files:
         return ""
 
-    parts = ["The following files have been uploaded for this conversation and are available for reference:\n"]
+    blocks = []
     for f in files:
-        filepath = f["disk_path"]
-        filename = f["original_name"]
-        text, truncated = extract_text(filepath, filename)
-        header = f"--- FILE: {filename} ---"
+        name = f["original_name"]
+        text, truncated = _cached_upload_read(f)
+        label = f"--- FILE: {name} ---"
         footer = "--- END OF FILE ---"
         if truncated:
             footer = f"--- END OF FILE (truncated at {HARD_LIMIT:,} characters) ---"
-        parts.append(f"{header}\n{text}\n{footer}")
+        blocks.append({"label": label, "text": text, "footer": footer, "chars": len(text)})
 
-    return "\n\n".join(parts)
+    sections, _ = _pack_sections(blocks, max_chars)
+    if not sections:
+        return ""
+    return (
+        "The following files have been uploaded for this conversation and are available for reference:\n\n"
+        + "\n\n".join(sections)
+    )
 
 
 # ── Linked folder scanning ─────────────────────────────────────────────────────
@@ -280,31 +462,42 @@ def _cached_read_entries(folder_path: str, file_entries: list[dict]) -> list[tup
 def build_linked_folder_context(
     linked_folders: list[dict],
     uploaded_files: list[dict],
+    max_chars: int = MAX_CONTEXT_CHARS,
+    preview_only: bool = False,
 ) -> tuple[str, int]:
     """
     Read all files from linked folders/files, memoised on disk fingerprints.
     Each linked entry may point to a directory or an individual file.
     Linked files take priority over uploaded files with the same basename.
-    Returns (context_str, total_char_count).
+
+    Combined contents are bounded by ``max_chars`` (default
+    ``MAX_CONTEXT_CHARS``) via ``_pack_sections``. With ``preview_only=True``
+    nothing is injected in full — only the index and a structural preview per
+    file (Phase 4 selective injection; full content is fetched on demand).
+
+    Returns (context_str, total_char_count), where ``total_char_count`` is the
+    sum of the *untruncated* file bodies (used for the size warning).
     """
     if not linked_folders:
         return "", 0
 
     # Build a set of basenames already covered by linked folders (for dedup)
     linked_basenames: set[str] = set()
-    folder_sections: list[str] = []
+    blocks: list[dict] = []
     total_chars = 0
 
     for lf in linked_folders:
         folder_path = lf["folder_path"]
         is_file      = os.path.isfile(folder_path)
-        label        = "LINKED FILE" if is_file else "LINKED FOLDER"
         file_entries = scan_linked_folder(folder_path)
 
         if not file_entries:
-            folder_sections.append(
-                f"--- {label}: {folder_path} (no supported files found) ---"
-            )
+            blocks.append({
+                "label": f"--- LINKED FOLDER: {folder_path} (no supported files found) ---",
+                "text": "",
+                "footer": "",
+                "chars": 0,
+            })
             continue
 
         if is_file:
@@ -317,38 +510,61 @@ def build_linked_folder_context(
             footer = "--- END OF FILE ---"
             if truncated:
                 footer = f"--- END OF FILE (truncated at {HARD_LIMIT:,} chars) ---"
-            folder_sections.append(
-                f"--- LINKED FILE: {folder_path} ---\n{text}\n{footer}"
-            )
+            blocks.append({
+                "label": f"--- LINKED FILE: {folder_path} ---",
+                "text": text,
+                "footer": footer,
+                "chars": len(text),
+            })
             continue
 
-        parts = [f"--- LINKED FOLDER: {folder_path} ({len(file_entries)} files) ---\n"]
-        for entry, text, truncated in _cached_read_entries(folder_path, file_entries):
+        entries = _cached_read_entries(folder_path, file_entries)
+        for entry, text, truncated in entries:
             linked_basenames.add(entry["filename"].lower())
             total_chars += len(text)
-            header = f"  -- FILE: {entry['rel_path']} --"
             footer = "  -- END OF FILE --"
             if truncated:
                 footer = f"  -- END OF FILE (truncated at {HARD_LIMIT:,} chars) --"
-            parts.append(f"{header}\n{text}\n{footer}")
-
-        folder_sections.append("\n\n".join(parts))
-
-    context = (
-        "The following linked folders and files are available for reference:\n\n"
-        + "\n\n".join(folder_sections)
-    )
+            blocks.append({
+                "label": (
+                    f"--- LINKED FOLDER: {folder_path} ({len(file_entries)} files) ---\n"
+                    f"  -- FILE: {entry['rel_path']} --"
+                ),
+                "text": text,
+                "footer": footer,
+                "chars": len(text),
+            })
 
     # Append uploaded files that are NOT superseded by a linked-folder file
     remaining_uploads = [
         f for f in uploaded_files
         if os.path.basename(f["original_name"]).lower() not in linked_basenames
     ]
-    if remaining_uploads:
-        upload_ctx = build_file_context(remaining_uploads)
-        if upload_ctx:
-            context += "\n\n" + upload_ctx
+    for f in remaining_uploads:
+        text, truncated = _cached_upload_read(f)
+        footer = "--- END OF FILE ---"
+        if truncated:
+            footer = f"--- END OF FILE (truncated at {HARD_LIMIT:,} chars) ---"
+        blocks.append({
+            "label": f"--- UPLOADED FILE: {f['original_name']} ---",
+            "text": text,
+            "footer": footer,
+            "chars": len(text),
+        })
 
+    sections, _ = _pack_sections(blocks, max_chars, preview_only=preview_only)
+    if not sections:
+        return "", total_chars
+
+    context = (
+        "The following linked folders and uploaded files are available for reference:\n\n"
+        + "\n\n".join(sections)
+    )
+    if preview_only:
+        context += (
+            "\n\nFiles above are shown as previews to save context. To read a file's "
+            "full content, call the read_named_file tool with its exact name."
+        )
     return context, total_chars
 
 

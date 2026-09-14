@@ -23,6 +23,7 @@ REQUIRED_TABLES = {
     "conv_files", "linked_folders", "settings", "research_sources",
     "artifacts", "artifact_deps", "artifact_traces", "artifact_assumptions",
     "change_events", "propagation_jobs", "agent_issues", "artifact_requests",
+    "token_usage",
 }
 
 

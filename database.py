@@ -239,6 +239,28 @@ class Setting(db.Model):
         }
 
 
+class TokenUsage(db.Model):
+    __tablename__ = 'token_usage'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False, index=True)
+    prompt_tokens = db.Column(db.Integer, nullable=False, default=0)
+    completion_tokens = db.Column(db.Integer, nullable=False, default=0)
+    total_tokens = db.Column(db.Integer, nullable=False, default=0)
+    estimated = db.Column(db.Integer, nullable=False, default=1)
+    created_at = db.Column(db.String(50), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "estimated": bool(self.estimated),
+            "created_at": self.created_at,
+        }
+
+
 class ResearchSource(db.Model):
     __tablename__ = 'research_sources'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -707,6 +729,7 @@ def init_db(app=None):
         with app.app_context():
             db.create_all()
             _ensure_archived_columns()
+            _ensure_token_usage_table()
             _seed_personas_and_settings()
             _ensure_api_key_column_capacity()
             migrate_existing_api_keys()
@@ -714,10 +737,19 @@ def init_db(app=None):
     else:
         db.create_all()
         _ensure_archived_columns()
+        _ensure_token_usage_table()
         _seed_personas_and_settings()
         _ensure_api_key_column_capacity()
         migrate_existing_api_keys()
         _ensure_repair_watermark()
+
+
+def _ensure_token_usage_table():
+    """Self-heal for databases that predate the Phase 6 token_usage table."""
+    inspector = inspect(db.engine)
+    if "token_usage" not in inspector.get_table_names():
+        TokenUsage.__table__.create(db.engine)
+        db.session.commit()
 
 
 def _ensure_repair_watermark():
@@ -906,6 +938,36 @@ def add_message(
     db.session.add(msg)
     db.session.commit()
     return msg.to_dict()
+
+
+# ── Token accounting (Phase 6) ─────────────────────────────────────────────────
+
+def record_token_usage(
+    conversation_id: int,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    estimated: bool = True,
+) -> dict:
+    """Persist one model call's token usage for a conversation."""
+    tu = TokenUsage(
+        conversation_id=conversation_id,
+        prompt_tokens=int(prompt_tokens or 0),
+        completion_tokens=int(completion_tokens or 0),
+        total_tokens=int(total_tokens or 0),
+        estimated=1 if estimated else 0,
+        created_at=_now(),
+    )
+    db.session.add(tu)
+    db.session.commit()
+    return tu.to_dict()
+
+
+def last_token_usage(conversation_id: int) -> dict | None:
+    """Return the most recent recorded usage row for a conversation."""
+    row = TokenUsage.query.filter_by(conversation_id=conversation_id)\
+        .order_by(TokenUsage.id.desc()).first()
+    return row.to_dict() if row else None
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
@@ -1170,6 +1232,43 @@ def delete_last_assistant_turn(conversation_id: int):
 
     Message.query.filter(Message.conversation_id == conversation_id, Message.id >= cut_from_id).delete()
     db.session.commit()
+
+
+def compact_conversation(conversation_id: int, keep_recent: int = 20) -> dict:
+    """
+    Compact a conversation's history to reduce the tokens re-sent to the model.
+
+    Keeps the opening turn (the first user message, which carries the task
+    context) plus the final ``keep_recent`` messages verbatim — those still
+    reference each other (assistant tool_calls ↔ tool results), so the API
+    history stays valid. Everything in between is deleted outright.
+
+    Returns:
+        {"deleted": int, "kept": int}
+    """
+    messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.id.asc()).all()
+    if not messages:
+        return {"deleted": 0, "kept": 0}
+
+    keep_ids: set[int] = set()
+    for m in messages:
+        keep_ids.add(m.id)
+        if m.role == "user":
+            break
+    for m in messages[-keep_recent:]:
+        keep_ids.add(m.id)
+
+    to_delete = [m for m in messages if m.id not in keep_ids]
+    if not to_delete:
+        return {"deleted": 0, "kept": len(messages)}
+
+    ids = [m.id for m in to_delete]
+    Message.query.filter(
+        Message.conversation_id == conversation_id,
+        Message.id.in_(ids),
+    ).delete(synchronize_session=False)
+    db.session.commit()
+    return {"deleted": len(ids), "kept": len(keep_ids)}
 
 
 def edit_message_and_truncate(conversation_id: int, message_id: int, new_content: str):

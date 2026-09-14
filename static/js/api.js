@@ -216,6 +216,12 @@ const API = {
     return res.json();
   },
 
+  async compactConversation(convId) {
+    const res = await fetch(`/api/conversations/${convId}/compact`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // { deleted, kept }
+  },
+
   async previewFile(convId, fileId) {
     const res = await fetch(`/api/conversations/${convId}/files/${fileId}/preview`);
     if (!res.ok) throw new Error(await res.text());

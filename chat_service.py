@@ -9,8 +9,47 @@ Yields structured events as plain dicts:
 - {'type': 'title', 'title': str, 'conv_id': int}
 """
 
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Callable
 import json
+
+from tokens import estimate_messages_tokens, estimate_tokens
+
+
+def _build_usage_record(
+    history: list[dict],
+    assistant_content: str,
+    stream_usage,
+) -> dict:
+    """
+    Turn a streamed usage object (or None) into a normalised usage dict.
+
+    Prefers the provider-reported token counts and falls back to local
+    estimates (Phase 6 real accounting).
+    """
+    est_prompt = estimate_messages_tokens(history)
+    est_completion = estimate_tokens(assistant_content)
+
+    if stream_usage is not None:
+        pt = getattr(stream_usage, "prompt_tokens", None)
+        ct = getattr(stream_usage, "completion_tokens", None)
+        tt = getattr(stream_usage, "total_tokens", None)
+        if pt is not None or ct is not None or tt is not None:
+            return {
+                "prompt_tokens": int(pt) if pt is not None else est_prompt,
+                "completion_tokens": int(ct) if ct is not None else est_completion,
+                "total_tokens": int(tt) if tt is not None else (
+                    (int(pt) if pt is not None else est_prompt)
+                    + (int(ct) if ct is not None else est_completion)
+                ),
+                "estimated": False,
+            }
+
+    return {
+        "prompt_tokens": est_prompt,
+        "completion_tokens": est_completion,
+        "total_tokens": est_prompt + est_completion,
+        "estimated": True,
+    }
 
 
 def run_chat_turn(
@@ -23,6 +62,8 @@ def run_chat_turn(
     max_iterations: int = 25,
     execute_tool_fn=None,
     output_dir: str = "",
+    record_usage_fn: Optional[Callable[[dict], None]] = None,
+    max_context_tokens: Optional[int] = None,
 ) -> Iterator[dict]:
     """
     Run a single chat turn with tool-call loop, yielding structured events.
@@ -36,6 +77,10 @@ def run_chat_turn(
         max_iterations: Maximum tool-call rounds before forcing termination
         execute_tool_fn: Function to execute tool calls (name, args, output_dir) -> result dict
         output_dir: Output directory for file operations
+        record_usage_fn: Optional callback receiving a per-model-call usage dict
+            (provider tokens when available, local estimates otherwise)
+        max_context_tokens: When set, refuse to call the model if the estimated
+            prompt exceeds this budget (Phase 6 pre-call guard)
 
     Yields:
         Dict events: token, tool_result, error, done, title
@@ -48,6 +93,19 @@ def run_chat_turn(
             yield {"type": "error", "message": f"Max iterations ({max_iterations}) reached"}
             return
 
+        if max_context_tokens:
+            estimate = estimate_messages_tokens(history)
+            if estimate > max_context_tokens:
+                yield {
+                    "type": "error",
+                    "message": (
+                        f"Estimated context is {estimate:,} tokens, over the "
+                        f"{max_context_tokens:,}-token budget. Compact the conversation "
+                        "or remove attached files/linked folders before continuing."
+                    ),
+                }
+                return
+
         try:
             create_kwargs = {
                 "model": model_id,
@@ -57,7 +115,17 @@ def run_chat_turn(
             if tools:
                 create_kwargs["tools"] = tools
                 create_kwargs["tool_choice"] = tool_choice or "auto"
-            stream = client.chat.completions.create(**create_kwargs)
+
+            # Ask for usage metadata; some OpenAI-compatible backends reject the
+            # parameter, so fall back to a plain request (estimates are used).
+            create_kwargs["stream_options"] = {"include_usage": True}
+            try:
+                stream = client.chat.completions.create(**create_kwargs)
+                stream_supports_usage = True
+            except Exception:
+                del create_kwargs["stream_options"]
+                stream = client.chat.completions.create(**create_kwargs)
+                stream_supports_usage = False
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
             return
@@ -65,10 +133,15 @@ def run_chat_turn(
         assistant_content = ""
         tool_calls_accum = {}
         chunk_count = 0
+        last_usage = None
 
         try:
             for chunk in stream:
                 chunk_count += 1
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    last_usage = usage
+
                 choice = chunk.choices[0] if chunk.choices else None
                 if choice is None:
                     continue
@@ -102,6 +175,10 @@ def run_chat_turn(
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
             return
+
+        # Persist per-call token accounting (provider usage when available).
+        if record_usage_fn:
+            record_usage_fn(_build_usage_record(history, assistant_content, last_usage))
 
         # Handle zero-chunk response: if no chunks were yielded, continue to next iteration
         if chunk_count == 0:

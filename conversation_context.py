@@ -132,11 +132,16 @@ def build_conversation_context(conv: dict, conv_id: int) -> tuple[str, dict]:
         }
 
     if linked_folders:
-        ctx, total_chars = build_linked_folder_context(linked_folders, conv_files)
+        # Phase 4 selective injection: linked folders are shipped as an index +
+        # per-file previews (never the full workspace dump). The model pulls
+        # full contents on demand via the read_named_file tool.
+        ctx, total_chars = build_linked_folder_context(
+            linked_folders, conv_files, preview_only=True
+        )
         if ctx:
             return ctx, {
                 "scope": "linked_folder",
-                "chars": total_chars,
+                "chars": len(ctx),
                 "warn": total_chars > WARN_THRESHOLD,
             }
         return "", {"scope": "none", "chars": 0, "warn": False}

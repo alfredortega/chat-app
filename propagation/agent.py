@@ -22,6 +22,14 @@ from parsers import parse_front_matter, build_front_matter, parse_assumption_mar
 MIN_SHRINK_RATIO = 0.6
 HEADING_PATTERN = re.compile(r"^##\s+.+$", re.MULTILINE)
 
+# Prompt-input caps (Phase 5). Whole-artifact rewrites still get the full
+# current artifact, but each upstream artifact and the change diff are bounded
+# so one oversized document cannot blow a job's context window.
+UPSTREAM_ARTIFACT_CAP = 24_000
+CURRENT_ARTIFACT_CAP = 60_000
+DIFF_CAP = 12_000
+PERSONA_CAP = 4_000
+
 
 # ── Rewrite guards (pure, server-side) ─────────────────────────────────────────
 
@@ -180,9 +188,21 @@ def build_agent_prompt(
     change_event: dict,
     current_artifact: str,
 ) -> list[dict]:
-    """Assemble the API message list for a propagation job."""
+    """Assemble the API message list for a propagation job.
+
+    All inputs are bounded (Phase 5): oversize upstream context, diffs and
+    artifacts are downsampled to a structural preview instead of blocking or
+    blowing the model window.
+    """
+    from file_handler import _smart_preview
+
+    persona_prompt = _smart_preview(persona_prompt, PERSONA_CAP)[0]
+    context = _smart_preview(context, UPSTREAM_ARTIFACT_CAP * 3)[0]
+    current_artifact = _smart_preview(current_artifact, CURRENT_ARTIFACT_CAP)[0]
+
     change_summary = change_event.get("summary") or ""
     diff = change_event.get("diff") or ""
+    diff = _smart_preview(diff, DIFF_CAP)[0]
     changed_reqs = change_event.get("changed_reqs") or []
 
     change_section = "CHANGE EVENT\n"
@@ -446,9 +466,12 @@ def _build_upstream_context(project_id: int, artifact_key: str, overlay: WaveOve
     deps = db_module.list_artifact_deps(project_id)
     upstream_keys = [d["upstream_key"] for d in deps if d["downstream_key"] == artifact_key]
 
+    from file_handler import _smart_preview
     parts = []
     for key in sorted(upstream_keys):
         content = overlay.get(key, "")
         if content:
-            parts.append(f"--- ARTIFACT: {key} ---\n{content}\n--- END: {key} ---")
+            preview, omitted = _smart_preview(content, UPSTREAM_ARTIFACT_CAP)
+            note = f" [preview: {omitted:,} chars omitted]" if omitted else ""
+            parts.append(f"--- ARTIFACT: {key} ---{note}\n{preview}\n--- END: {key} ---")
     return "\n\n".join(parts) if parts else "(no upstream artifacts declared)"

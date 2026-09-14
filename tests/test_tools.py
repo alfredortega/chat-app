@@ -9,11 +9,14 @@ class TestBuildTools:
     """Tests for build_tools() profile selection."""
 
     def test_chat_profile_returns_default_tools(self):
-        """Chat profile returns the four default tools."""
+        """Chat profile returns the default tools."""
         tool_defs = tools.build_tools("chat")
         tool_names = [t["function"]["name"] for t in tool_defs]
-        assert tool_names == ["fetch_webpage", "write_file", "read_file", "list_directory", "run_python"]
-        assert len(tool_defs) == 5
+        assert tool_names == [
+            "fetch_webpage", "write_file", "read_named_file", "read_file",
+            "list_directory", "run_python",
+        ]
+        assert len(tool_defs) == 6
 
     def test_propagation_profile_returns_propagation_tools(self):
         """Propagation profile returns the six propagation tools."""

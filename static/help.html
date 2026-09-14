@@ -450,11 +450,25 @@
       Word documents, Excel spreadsheets, CSVs, JSON/YAML, and more. Unsupported files are
       skipped automatically.</li>
       <li><strong>Large files:</strong> if a file (or linked folder) contains a very large amount
-      of text, you will be warned, because it can slow responses or reduce answer quality. Very
-      large files may be shortened so only the first portion is used.</li>
+      of text, you will be warned, because it can slow responses or reduce answer quality. When
+      the combined file contents exceed the per-conversation budget, the smallest files are
+      downsampled to a structural preview (headings, signatures, and opening lines) behind an
+      index so every file stays discoverable without paying for all of its text.</li>
       <li>The <strong>context badge</strong> in the chat header shows the estimated number of
       tokens in the current conversation, colour-coded from grey (comfortable) to red
-      (very large).</li>
+      (very large). Once a message has been sent, the badge reflects the provider's
+      reported token counts for the last exchange. Clicking the <strong>compact</strong>
+      button next to it drops the older turns, keeping only the opening message and the
+      most recent context, so the model re-sends fewer tokens on every message.</li>
+      <li>Uploaded and linked file contents are injected up to a per-conversation budget
+      (~100k characters). Linked folders are shipped as an <strong>index + preview</strong>
+      (never the full folder dump) — the model reads a full file on demand with the
+      <em>read_named_file</em> tool. When a folder is larger than the budget, you'll also
+      get an index of every file, the largest files in full, and a structural preview of
+      the rest.</li>
+      <li><strong>Context guard:</strong> if a request's estimated tokens exceed the model
+      budget (<code>MODEL_CONTEXT_BUDGET</code>, default 128k), the app refuses the call
+      and asks you to compact instead of wasting tokens on a doomed request.</li>
     </ul>
     <div class="callout">
       <p><strong>Uploaded vs. linked:</strong> <em>Uploaded</em> files are stored with the

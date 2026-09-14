@@ -19,9 +19,11 @@ import file_handler as fh
 def _clear_caches():
     fh._linked_folder_cache.clear()
     fh._linked_context_cache.clear()
+    fh._upload_content_cache.clear()
     yield
     fh._linked_folder_cache.clear()
     fh._linked_context_cache.clear()
+    fh._upload_content_cache.clear()
 
 
 def _workspace(tmp_path):

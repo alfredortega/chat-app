@@ -33,10 +33,32 @@ from openai import OpenAI
 import database as db
 from tools import TOOLS, execute_tool_call
 from file_handler import (
-    ensure_upload_dir, allowed_extension, extract_text,
+    ensure_upload_dir, allowed_extension, extract_text, evict_upload_cache,
+    build_file_context,
     build_linked_folder_context,
     scan_linked_folder, WARN_THRESHOLD,
 )
+
+# Tool results (read_file, fetch_webpage, run_python, …) can be enormous. The
+# full result is persisted in the conversation history for UI/preview, but only
+# a capped slice is re-sent to the model on subsequent turns — otherwise one
+# big tool call blows the whole context window forever.
+TOOL_RESULT_CAP = 32_000
+
+# Pre-call context guard (Phase 6): if the estimated prompt tokens for a request
+# exceed this budget, the request is refused with guidance to compact instead of
+# wasting a doomed API call. Override with the MODEL_CONTEXT_BUDGET env var.
+MODEL_CONTEXT_BUDGET = int(os.environ.get("MODEL_CONTEXT_BUDGET", "128000"))
+
+
+def _cap_tool_content(content: str) -> str:
+    """Bound tool output sent to the model while leaving the stored row intact."""
+    if content and len(content) > TOOL_RESULT_CAP:
+        return content[:TOOL_RESULT_CAP] + (
+            f"\n\n[… tool output truncated at {TOOL_RESULT_CAP:,} chars — "
+            "full result kept in conversation history]"
+        )
+    return content
 from chat_service import run_chat_turn, sse_event
 
 def create_app(config=None):
@@ -423,7 +445,13 @@ def chat(conv_id):
     endpoint = _endpoint_for_conversation(conv)
     model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
-    base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+    # Build the file/artifact context ONCE so the system prompt and the SSE
+    # scope disclosure share the same snapshot (no double build per request).
+    from conversation_context import build_conversation_context
+    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    base_system, output_dir = _build_system_prompt(
+        conv, conv_id, _tools_enabled(conv), context_section=context_section,
+    )
     tools_on = _tools_enabled(conv)
     system_prompt = {"role": "system", "content": base_system}
 
@@ -432,6 +460,10 @@ def chat(conv_id):
 
     client = get_client(endpoint)
 
+    def record_usage(usage: dict):
+        db.record_token_usage(conv_id, **usage)
+        return None
+
     def generate():
         """Stream SSE events back to the browser."""
         # Send updated title if this was the first message
@@ -439,13 +471,14 @@ def chat(conv_id):
             yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
 
         # Disclose what context was injected for this message (scope/tokens/warn)
-        from conversation_context import build_conversation_context
-        yield sse_event({"type": "scope", "meta": build_conversation_context(conv, conv_id)[1]})
+        yield sse_event({"type": "scope", "meta": scope_meta})
 
         tools = TOOLS if tools_on else None
 
         def execute_tool_fn(fn_name, fn_args, output_dir):
-            result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+            result = execute_tool_call(
+                fn_name, fn_args, output_dir=output_dir, conv_id=conv_id,
+            )
             return result
 
         # Use the extracted chat service
@@ -458,6 +491,8 @@ def chat(conv_id):
             max_iterations=25,
             execute_tool_fn=execute_tool_fn,
             output_dir=output_dir,
+            record_usage_fn=record_usage,
+            max_context_tokens=MODEL_CONTEXT_BUDGET,
         )
 
         # Process events and persist messages
@@ -507,7 +542,7 @@ def chat(conv_id):
                 history.append({
                     "role": "tool",
                     "tool_call_id": event["tool_call_id"],
-                    "content": event["content"],
+                    "content": _cap_tool_content(event["content"]),
                 })
 
             elif event["type"] == "error":
@@ -546,20 +581,30 @@ def regenerate(conv_id):
     endpoint = _endpoint_for_conversation(conv)
     model_id = conv["model_id"] or (endpoint or {}).get("default_model") or ""
 
-    base_system, output_dir = _build_system_prompt(conv, conv_id, _tools_enabled(conv))
+    # Build context once and reuse for the SSE scope disclosure (no double build).
+    from conversation_context import build_conversation_context
+    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    base_system, output_dir = _build_system_prompt(
+        conv, conv_id, _tools_enabled(conv), context_section=context_section,
+    )
     tools_on = _tools_enabled(conv)
     history = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
     client = get_client(endpoint)
+
+    def record_usage(usage: dict):
+        db.record_token_usage(conv_id, **usage)
+        return None
 
     def generate():
         tools = TOOLS if tools_on else None
 
         # Disclose what context was injected for this message (scope/tokens/warn)
-        from conversation_context import build_conversation_context
-        yield sse_event({"type": "scope", "meta": build_conversation_context(conv, conv_id)[1]})
+        yield sse_event({"type": "scope", "meta": scope_meta})
 
         def execute_tool_fn(fn_name, fn_args, output_dir):
-            result = execute_tool_call(fn_name, fn_args, output_dir=output_dir)
+            result = execute_tool_call(
+                fn_name, fn_args, output_dir=output_dir, conv_id=conv_id,
+            )
             return result
 
         events = run_chat_turn(
@@ -571,6 +616,8 @@ def regenerate(conv_id):
             max_iterations=25,
             execute_tool_fn=execute_tool_fn,
             output_dir=output_dir,
+            record_usage_fn=record_usage,
+            max_context_tokens=MODEL_CONTEXT_BUDGET,
         )
 
         pending_assistant_content = ""
@@ -613,7 +660,7 @@ def regenerate(conv_id):
                 history.append({
                     "role": "tool",
                     "tool_call_id": event["tool_call_id"],
-                    "content": event["content"],
+                    "content": _cap_tool_content(event["content"]),
                 })
 
             elif event["type"] == "error":
@@ -677,8 +724,9 @@ def token_count(conv_id):
     if linked_folders:
         _, file_chars = build_linked_folder_context(linked_folders, conv_files)
     elif conv_files:
-        for f in conv_files:
-            file_chars += f.get("char_count", 0)
+        # Reflect the size actually injected (build_file_context applies the
+        # per-conversation budget), not the raw on-disk character count.
+        file_chars = len(build_file_context(conv_files))
     total_chars += file_chars
     # Rough approximation: 1 token ≈ 4 characters
     estimated_tokens = total_chars // 4
@@ -687,7 +735,23 @@ def token_count(conv_id):
         "message_chars": total_chars - file_chars,
         "file_chars": file_chars,
         "total_chars": total_chars,
+        "last_usage": db.last_token_usage(conv_id),
     })
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/compact", methods=["POST"])
+def compact_conversation_route(conv_id):
+    """Drop older turns so the model only sees the recent conversation context.
+
+    Keeps the opening user message for task context plus the final N messages;
+    everything in between is removed from the conversation history (and thus
+    out of the model context window on subsequent turns).
+    """
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Conversation not found"}), 404
+    result = db.compact_conversation(conv_id)
+    db.touch_conversation(conv_id)
+    return jsonify(result)
 
 
 @legacy_bp.route("/api/conversations/<int:conv_id>/files/<int:file_id>/preview", methods=["GET"])
@@ -820,6 +884,7 @@ def delete_file(conv_id, file_id):
             os.remove(record["disk_path"])
     except OSError:
         pass  # log but don't block deletion
+    evict_upload_cache(record["disk_path"])
 
     db.delete_conv_file(file_id)
     return jsonify({"ok": True})
@@ -1242,11 +1307,20 @@ def _tools_enabled(conv: dict) -> bool:
     return bool(conv.get("enable_tools", 1))
 
 
-def _build_system_prompt(conv: dict, conv_id: int, tools_on: bool) -> tuple[str, str]:
+def _build_system_prompt(
+    conv: dict,
+    conv_id: int,
+    tools_on: bool,
+    context_section: str = None,
+) -> tuple[str, str]:
     """
-    Fix #1/#5: single, shared helper that builds the system prompt string and
-    resolves the effective output directory.  Used by both chat() and
-    regenerate() so the logic lives in exactly one place.
+    Single, shared helper that builds the system prompt string and resolves the
+    effective output directory.  Used by both chat() and regenerate().
+
+    ``context_section`` may be passed in (already built by the caller, e.g. when
+    the scope metadata is needed for the SSE scope event) to avoid building the
+    file/artifact context twice per request.
+
     Returns (base_system, output_dir).
     """
     if tools_on:
@@ -1258,6 +1332,8 @@ def _build_system_prompt(conv: dict, conv_id: int, tools_on: bool) -> tuple[str,
             "genuinely help the user:\n"
             "- write_file: save content to disk (only when user asks to save/create a file)\n"
             "- read_file: read an existing file from disk by absolute path\n"
+            "- read_named_file: read the full content of a conversation file or "
+            "linked-folder file by name (use when a file was only previewed)\n"
             "- list_directory: list files and folders in a directory by absolute path\n"
             "- run_python: execute a Python snippet and return its output\n"
             "For normal conversational responses, answer directly in the chat. "
@@ -1285,8 +1361,9 @@ def _build_system_prompt(conv: dict, conv_id: int, tools_on: bool) -> tuple[str,
         if persona:
             base_system += "\n\nPersona instructions: " + persona["prompt"]
 
-    from conversation_context import build_conversation_context
-    context_section, _scope_meta = build_conversation_context(conv, conv_id)
+    if context_section is None:
+        from conversation_context import build_conversation_context
+        context_section, _scope_meta = build_conversation_context(conv, conv_id)
     if context_section:
         base_system += "\n\n" + context_section
 
@@ -1321,7 +1398,7 @@ def _build_api_messages(rows: list[dict]) -> list[dict]:
             msg = {
                 "role": "tool",
                 "tool_call_id": tool_call_id,
-                "content": content,
+                "content": _cap_tool_content(content),
             }
         else:
             msg = {"role": role, "content": content}

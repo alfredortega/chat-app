@@ -122,6 +122,11 @@ def git_commit_all(repo_path: str, message: str) -> GitResult:
     return git_commit(repo_path, message)
 
 
+# Diffs are stored verbatim in change events and then injected into agent
+# prompts, so they are bounded to protect the model context window.
+DIFF_MAX_CHARS = 12_000
+
+
 def git_diff(repo_path: str, cached: bool = False) -> GitResult:
     """Show diff of changes."""
     args = ["diff"]
@@ -130,13 +135,18 @@ def git_diff(repo_path: str, cached: bool = False) -> GitResult:
     return run_git_command(repo_path, *args)
 
 
-def git_diff_file(repo_path: str, file_path: str, cached: bool = False) -> GitResult:
-    """Show diff for a specific file."""
+def git_diff_file(repo_path: str, file_path: str, cached: bool = False, max_chars: int = DIFF_MAX_CHARS) -> GitResult:
+    """Show diff for a specific file, bounded to ``max_chars`` characters."""
     args = ["diff"]
     if cached:
         args.append("--cached")
     args.extend(["--", file_path])
-    return run_git_command(repo_path, *args)
+    result = run_git_command(repo_path, *args)
+    if result.success and max_chars and len(result.output) > max_chars:
+        result.output = result.output[:max_chars] + (
+            f"\n… [diff truncated at {max_chars:,} chars — full diff on disk]"
+        )
+    return result
 
 
 def git_log(repo_path: str, max_count: int = 10) -> GitResult:

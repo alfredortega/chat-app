@@ -75,6 +75,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "read_named_file",
+            "description": (
+                "Read the full content of a file that belongs to this "
+                "conversation: an uploaded file, or a file inside a linked "
+                "folder. Pass the file's name exactly as shown in the context "
+                "index (e.g. 'notes.md', 'src/app.py'). Use this when the user "
+                "asks about a file whose contents were only previewed, or "
+                "when you need details beyond the preview. Returns up to "
+                "32,000 characters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The file name/path to read exactly as listed in the context index.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
             "description": (
                 "Read the text content of a file from the local filesystem. "
@@ -365,6 +390,7 @@ def execute_tool_call(
     context: str = "chat",
     workspace_dir: str = None,
     project_id: int = None,
+    conv_id: int = None,
 ) -> dict:
     """
     Execute a named tool call.
@@ -381,6 +407,9 @@ def execute_tool_call(
     tools (e.g., write_artifact). Required when context="propagation".
 
     ``project_id`` is the project (folder) ID for artifact registration checks.
+
+    ``conv_id`` scopes read_named_file to the conversation's own uploaded files
+    and linked folders.
     """
     try:
         args = json.loads(arguments_json)
@@ -404,6 +433,8 @@ def execute_tool_call(
         return _fetch_webpage(args)
     if name == "read_file":
         return _read_file(args)
+    if name == "read_named_file":
+        return _read_named_file(args, conv_id=conv_id)
     if name == "list_directory":
         return _list_directory(args)
     if name == "run_python":
@@ -726,6 +757,69 @@ def _write_file(args: dict, output_dir: str = None) -> dict:
     except OSError as exc:
         return {"success": False, "result": f"Failed to write file: {exc}",
                 "display": f"❌ File write failed: {exc}"}
+
+
+# ── read_named_file ───────────────────────────────────────────────────────────
+
+def _read_named_file(args: dict, conv_id: int = None) -> dict:
+    """
+    Read a conversation-scoped file (an uploaded file or a file inside a linked
+    folder) by name. Resolution is restricted to the conversation's own files,
+    so — unlike ``read_file`` — this never reads arbitrary paths.
+    """
+    name = (args.get("name") or "").strip().lstrip("/")
+    if not name:
+        return {"success": False, "result": "No file name provided.",
+                "display": "❌ Read failed — no file name specified."}
+
+    candidates = []
+    if conv_id is not None:
+        for f in db.list_conv_files(conv_id):
+            candidates.append({
+                "path": f["disk_path"],
+                "label": f["original_name"],
+                "name": os.path.basename(f["original_name"]),
+            })
+        from file_handler import scan_linked_folder
+        for lf in db.list_linked_folders(conv_id):
+            for entry in scan_linked_folder(lf["folder_path"]):
+                candidates.append({
+                    "path": entry["abs_path"],
+                    "label": entry["rel_path"],
+                    "name": entry["filename"],
+                })
+
+    if not candidates:
+        return {"success": False,
+                "result": "No uploaded files or linked folders on this conversation.",
+                "display": "⚠️ No conversation files available."}
+
+    lowered = name.lower()
+    matches = [
+        c for c in candidates
+        if name in (c["label"], c["name"]) or lowered in c["label"].lower() or lowered in c["name"].lower()
+    ]
+    # 'app.py' already matches; prefer an exact basename/label over a substring.
+    exact = [c for c in matches if name in (c["label"], c["name"])]
+    if not matches:
+        available = ", ".join(sorted({c["label"] for c in candidates})[:40])
+        return {"success": False,
+                "result": f"File not found: '{name}'. Available files: {available}",
+                "display": f"❌ File not found: `{name}`"}
+
+    match = (exact or matches)[0]
+    try:
+        from file_handler import extract_text
+        text, truncated = extract_text(match["path"], os.path.basename(match["path"]))
+        cap = 32_000
+        if len(text) > cap:
+            text = text[:cap] + f"\n… [truncated at {cap:,} chars]"
+        note = " (truncated)" if truncated else ""
+        return {"success": True, "result": text,
+                "display": f"📄 Read file: `{match['label']}`{note}"}
+    except Exception as exc:
+        return {"success": False, "result": f"Failed to read file: {exc}",
+                "display": f"❌ Read failed: `{match['label']}`"}
 
 
 # ── read_file ──────────────────────────────────────────────────────────────────

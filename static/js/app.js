@@ -172,6 +172,8 @@ const App = {
 
     // Token count badge
     this.tokenCountBadge = document.getElementById("tokenCountBadge");
+    this.compactBtn = document.getElementById("btnCompactConv");
+    this.compactBtn.addEventListener("click", () => this.compactConversation());
 
     // File preview modal
     this.filePreviewModal = new bootstrap.Modal(document.getElementById("filePreviewModal"));
@@ -978,6 +980,9 @@ const App = {
       this.tokenCountBadge.classList.add("d-none");
       this.tokenCountBadge.textContent = "";
     }
+    if (this.compactBtn) {
+      this.compactBtn.classList.add("d-none");
+    }
 
     try {
       const conv = await API.getConversation(id);
@@ -1163,7 +1168,35 @@ const App = {
       if (t >= 100000)      this.tokenCountBadge.classList.add("bg-danger");
       else if (t >= 50000)  this.tokenCountBadge.classList.add("bg-warning", "text-dark");
       else                  this.tokenCountBadge.classList.add("bg-secondary");
+      if (this.compactBtn) {
+        this.compactBtn.classList.remove("d-none");
+        this.compactBtn.title =
+          `Compact conversation (drop older turns to reduce tokens sent to the model)`;
+      }
     } catch (_) {}
+  },
+
+  // ── Compact conversation ──────────────────────────────────────────────────────
+
+  async compactConversation() {
+    if (this.isStreaming || !this.activeConvId) return;
+    const convId = this.activeConvId;
+    if (!confirm(
+      "Compact this conversation?\n\n" +
+      "Older turns will be dropped and only the most recent context kept, " +
+      "reducing the tokens sent to the model on every message. This cannot be undone."
+    )) return;
+    try {
+      const result = await API.compactConversation(convId);
+      if (result.deleted > 0) {
+        Chat.appendToolNotification(true, `Conversation compacted — removed ${result.deleted} older message${result.deleted === 1 ? "" : "s"}, kept ${result.kept}.`);
+        await this.selectConversation(convId);
+      } else {
+        Chat.appendToolNotification(true, "Conversation is already short enough — nothing to compact.");
+      }
+    } catch (err) {
+      Chat.appendToolNotification(false, `❌ Compaction failed: ${err.message}`);
+    }
   },
 
   // ── Regenerate ───────────────────────────────────────────────────────────────
