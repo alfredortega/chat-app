@@ -21,8 +21,13 @@ const SaveFiles = {
     this._sections = this._parse(markdown);
     if (this._sections.length === 0) return;
 
-    const outputDir = App.outputDir || "";
-    document.getElementById("saveFilesOutputDir").value = outputDir;
+    this._localAccess = (App.allowLocalFileAccess !== false);
+
+    const outputDir = this._localAccess ? (App.outputDir || "") : "";
+    const dirField = document.getElementById("saveFilesOutputDir");
+    if (dirField) dirField.value = outputDir;
+    const dirGroup = document.getElementById("saveFilesOutputDirGroup");
+    if (dirGroup) dirGroup.classList.toggle("d-none", !this._localAccess);
 
     this._renderPreview();
     this._modal.show();
@@ -72,33 +77,44 @@ const SaveFiles = {
   // ── Save ───────────────────────────────────────────────────────────────────
 
   async save() {
-    const dir = document.getElementById("saveFilesOutputDir").value.trim();
-    if (!dir) {
-      alert("Please enter an output directory path.");
-      return;
-    }
+    const dirField = document.getElementById("saveFilesOutputDir");
+    const dir = dirField ? dirField.value.trim() : "";
+    const localAccess = this._localAccess !== false;
 
-    // Persist the chosen directory so it becomes the new default
-    App.outputDir = dir;
-    try { await API.saveSettings({ output_dir: dir }); } catch (_) {}
+    if (localAccess) {
+      if (!dir) {
+        alert("Please enter an output directory path.");
+        return;
+      }
+      // Persist the chosen directory so it becomes the new default
+      App.outputDir = dir;
+      try { await API.saveSettings({ output_dir: dir }); } catch (_) {}
+    }
 
     // Collect (possibly edited) filenames
     const items = this._sections.map((s, i) => {
       const nameEl = document.getElementById(`sfName_${i}`);
       const name   = (nameEl ? nameEl.value.trim() : s.filename) || s.filename;
-      const path   = dir.replace(/[\\/]$/, "") + "/" + name;
+      const path   = localAccess
+        ? dir.replace(/[\\/]$/, "") + "/" + name
+        : name;
       return { path, content: s.content };
     });
 
     this._modal.hide();
 
     // Write each file via the existing write_file tool API
+    const convId = App.activeConvId;
     for (const item of items) {
       try {
         const res = await fetch(`/api/write_file`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: item.path, content: item.content }),
+          body: JSON.stringify({
+            path: item.path,
+            content: item.content,
+            conversation_id: localAccess ? undefined : convId,
+          }),
         });
         const data = await res.json();
         Chat.appendToolNotification(data.success, data.display);
@@ -107,6 +123,13 @@ const SaveFiles = {
       }
     }
     Chat.scrollToBottom();
+
+    // In locked mode the saved files become conversation uploads — refresh the
+    // file list so they appear in the sidebar immediately.
+    if (!localAccess && typeof Files !== "undefined") {
+      if (convId) { try { await Files.load(convId); } catch (_) {} }
+      else { try { await Files.load(App.activeConvId); } catch (_) {} }
+    }
   },
 };
 

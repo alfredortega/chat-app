@@ -201,7 +201,11 @@ PROPAGATION_TOOLS = [
                 "Write or update a project artifact in the workspace. "
                 "Only permitted subdirectories under the workspace root are allowed. "
                 "Path traversal (..) is rejected. The artifact_key must be registered "
-                "in the project's artifact index."
+                "in the project's artifact index. "
+                "Prefer passing `diff` (a unified diff that transforms the current "
+                "artifact into the new version) — it is far cheaper to generate than "
+                "outputting the whole file. `content` (the full new file) is accepted "
+                "too for small files."
             ),
             "parameters": {
                 "type": "object",
@@ -210,12 +214,20 @@ PROPAGATION_TOOLS = [
                         "type": "string",
                         "description": "The unique key of the artifact (e.g., 'DB-MODEL', 'QA-PLAN')."
                     },
+                    "diff": {
+                        "type": "string",
+                        "description": (
+                            "Unified diff of the changes to apply to the current "
+                            "artifact. Use standard hunks (`@@ -l,c +l,c @@` with "
+                            "context/removed/added lines)."
+                        ),
+                    },
                     "content": {
                         "type": "string",
-                        "description": "Full text content to write to the artifact file.",
+                        "description": "Full new text content to write to the artifact file (alternative to diff).",
                     },
                 },
-                "required": ["artifact_key", "content"],
+                "required": ["artifact_key"],
             },
         },
     },
@@ -359,6 +371,12 @@ PROFILE_TOOL_MAP = {
     "propagation": [t["function"]["name"] for t in PROPAGATION_TOOLS],
 }
 
+# Tools that grant the model access to the local filesystem / arbitrary paths.
+# When ``allow_local_file_access`` is off these are hidden from the schema and
+# denied server-side. read_named_file stays available because it is scoped to
+# files uploaded to the conversation.
+LOCAL_ACCESS_TOOLS = {"write_file", "read_file", "list_directory", "run_python"}
+
 
 def build_tools(context: str) -> list[dict]:
     """
@@ -369,7 +387,16 @@ def build_tools(context: str) -> list[dict]:
 
     Returns:
         List of tool definition dicts compatible with OpenAI function-calling API.
+
+    When global local file access is disabled (Settings → "Allow local file
+    access"), local-access tools are removed from the schema so the model never
+    sees them. In propagation context that means no tools at all — the whole
+    propagation system requires reading/writing the project workspace.
     """
+    if not db.local_file_access_enabled():
+        if context == "propagation":
+            return []
+        return [t for t in TOOLS if t["function"]["name"] not in LOCAL_ACCESS_TOOLS]
     if context == "propagation":
         return PROPAGATION_TOOLS
     return TOOLS
@@ -425,6 +452,13 @@ def execute_tool_call(
             "success": False,
             "result": f"Tool '{name}' is not available in '{context}' context.",
             "display": f"❌ Tool '{name}' not permitted in {context} mode.",
+        }
+
+    if name in LOCAL_ACCESS_TOOLS and not db.local_file_access_enabled():
+        return {
+            "success": False,
+            "result": "Local file access is disabled — enable it in Settings to use this tool.",
+            "display": "❌ Local file access is disabled in Settings.",
         }
 
     if name == "write_file":

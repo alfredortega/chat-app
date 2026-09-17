@@ -121,6 +121,49 @@ class TestChatService:
         done_events = [e for e in events if e["type"] == "done"]
         assert len(done_events) == 1
 
+    def test_multi_turn_tool_loop_feeds_results_back(self):
+        """Tool results must be appended to the model history between iterations.
+
+        Regression: run_chat_turn used to copy ``messages`` and never re-send
+        the assistant tool-call message or the tool results, so the loop
+        re-issued the same tool calls forever (the "BA generated 4 documents
+        then hung" runaway). The second API call must contain both the
+        assistant message with tool_calls and the tool result.
+        """
+        client = FakeOpenAIClient()
+        client.add_tool_calls_response([
+            {"id": "call_1", "name": "write_file", "arguments": '{"path": "a.txt"}'},
+        ])
+        client.add_text_response("Done!")
+
+        def execute_tool(fn_name, fn_args, output_dir):
+            return {"success": True, "display": "File written", "result": "wrote a.txt", "blocked_url": None}
+
+        events = list(run_chat_turn(
+            client=client,
+            model_id="test-model",
+            messages=[{"role": "user", "content": "Write a file"}],
+            tools=[{"type": "function", "function": {"name": "write_file"}}],
+            tool_choice="auto",
+            max_iterations=10,
+            execute_tool_fn=execute_tool,
+            output_dir="/tmp",
+        ))
+
+        assert [e["type"] for e in events].count("done") == 1
+
+        calls = client.get_calls()
+        assert len(calls) == 2
+        second = calls[1]["messages"]
+        roles = [m["role"] for m in second]
+        assert "tool" in roles, f"tool result missing from 2nd call: {roles}"
+        assert "assistant" in roles
+        assistant = next(m for m in second if m["role"] == "assistant")
+        assert assistant.get("tool_calls"), "assistant tool_calls missing from 2nd call"
+        tool_msg = next(m for m in second if m["role"] == "tool")
+        assert tool_msg["tool_call_id"] == "call_1"
+        assert tool_msg["content"] == "wrote a.txt"
+
     def test_max_iterations_guard_terminates_loop(self):
         """Test that max_iterations guard terminates a runaway tool loop with error event."""
         client = FakeOpenAIClient()
@@ -208,6 +251,27 @@ class TestChatService:
 
         content = "".join(e["content"] for e in token_events)
         assert content == "Actual response"
+
+    def test_repeated_zero_chunks_terminate(self):
+        """Regression: a provider returning empty streams forever must not hang
+        the propagation wave. Each empty stream counts as an iteration, so the
+        max_iterations guard terminates the loop with an error event."""
+        client = FakeOpenAIClient()
+        # Enough empty streams to exceed the (tiny) iteration cap.
+        for _ in range(30):
+            client.add_zero_chunk_response()
+
+        events = list(run_chat_turn(
+            client=client,
+            model_id="test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_iterations=5,
+        ))
+
+        error_events = [e for e in events if e["type"] == "error"]
+        assert len(error_events) == 1
+        assert "Max iterations" in error_events[0]["message"]
 
     def test_empty_tool_calls_handling(self):
         """Test handling when tool_calls is present but empty."""

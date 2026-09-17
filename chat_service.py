@@ -14,6 +14,21 @@ import json
 
 from tokens import estimate_messages_tokens, estimate_tokens
 
+# Tool results fed back to the model on the next tool-call iteration are capped
+# so one oversized result cannot blow the whole context window. The full result
+# is still persisted to the conversation history for UI/preview.
+TOOL_RESULT_CAP = 32_000
+
+
+def _cap_tool_content(content: str) -> str:
+    """Bound tool output re-sent to the model on subsequent iterations."""
+    if content and len(content) > TOOL_RESULT_CAP:
+        return content[:TOOL_RESULT_CAP] + (
+            f"\n\n[… tool output truncated at {TOOL_RESULT_CAP:,} chars — "
+            "full result kept in conversation history]"
+        )
+    return content
+
 
 def _build_usage_record(
     history: list[dict],
@@ -64,6 +79,7 @@ def run_chat_turn(
     output_dir: str = "",
     record_usage_fn: Optional[Callable[[dict], None]] = None,
     max_context_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> Iterator[dict]:
     """
     Run a single chat turn with tool-call loop, yielding structured events.
@@ -81,6 +97,9 @@ def run_chat_turn(
             (provider tokens when available, local estimates otherwise)
         max_context_tokens: When set, refuse to call the model if the estimated
             prompt exceeds this budget (Phase 6 pre-call guard)
+        max_output_tokens: When set, pass ``max_tokens`` on each API call to cap
+            generated output (e.g. propagation diff rewrites). Providers that
+            reject the parameter fall back to an uncapped call.
 
     Yields:
         Dict events: token, tool_result, error, done, title
@@ -115,6 +134,8 @@ def run_chat_turn(
             if tools:
                 create_kwargs["tools"] = tools
                 create_kwargs["tool_choice"] = tool_choice or "auto"
+            if max_output_tokens:
+                create_kwargs["max_tokens"] = max_output_tokens
 
             # Ask for usage metadata; some OpenAI-compatible backends reject the
             # parameter, so fall back to a plain request (estimates are used).
@@ -123,8 +144,14 @@ def run_chat_turn(
                 stream = client.chat.completions.create(**create_kwargs)
                 stream_supports_usage = True
             except Exception:
-                del create_kwargs["stream_options"]
-                stream = client.chat.completions.create(**create_kwargs)
+                create_kwargs.pop("stream_options", None)
+                try:
+                    stream = client.chat.completions.create(**create_kwargs)
+                except Exception:
+                    # Some providers reject max_tokens too (e.g. older local
+                    # servers) — retry uncapped so a hard cap never breaks chat.
+                    create_kwargs.pop("max_tokens", None)
+                    stream = client.chat.completions.create(**create_kwargs)
                 stream_supports_usage = False
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
@@ -180,8 +207,12 @@ def run_chat_turn(
         if record_usage_fn:
             record_usage_fn(_build_usage_record(history, assistant_content, last_usage))
 
-        # Handle zero-chunk response: if no chunks were yielded, continue to next iteration
+        # Handle zero-chunk response: if no chunks were yielded, continue to the
+        # next iteration but count it as progress so a provider that repeatedly
+        # returns an empty stream cannot loop forever (max_iterations still
+        # bounds the loop).
         if chunk_count == 0:
+            iteration += 1
             continue
 
         if tool_calls_accum:
@@ -193,6 +224,16 @@ def run_chat_turn(
                 }
                 for v in tool_calls_accum.values()
             ]
+
+            # Feed the assistant's tool-call message back into the conversation
+            # so the model sees it (and the tool results below) on the next
+            # iteration. Without this the loop re-sends the original messages
+            # and the model re-issues the same calls forever.
+            history.append({
+                "role": "assistant",
+                "content": assistant_content or None,
+                "tool_calls": tc_list,
+            })
 
             yield {"type": "assistant_message", "content": assistant_content, "tool_calls": tc_list}
 
@@ -214,6 +255,13 @@ def run_chat_turn(
                 }
 
                 yield {"type": "tool_message", "tool_call_id": tool_call_id, "content": result["result"]}
+
+                # Append the tool result so the model can act on it next round.
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": _cap_tool_content(result["result"]),
+                })
 
             iteration += 1
             continue

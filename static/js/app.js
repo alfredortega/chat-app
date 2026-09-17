@@ -267,6 +267,7 @@ const App = {
       this.researchSources = researchSourcesData || [];
       this.outputDir    = settingsData.output_dir    || "";
       this.browserRoot  = settingsData.browser_root  || "";
+      this.allowLocalFileAccess = (settingsData.allow_local_file_access ?? 1) === 1;
       const ep = this._currentEndpoint();
       if (ep && ep.model_filter && ep.model_filter.trim()) {
         const filterText = ep.model_filter.trim().toLowerCase();
@@ -1585,6 +1586,8 @@ const App = {
   openSettings() {
     document.getElementById("settingsBrowserRoot").value = this.browserRoot;
     document.getElementById("settingsOutputDir").value   = this.outputDir;
+    const accChk = document.getElementById("settingsLocalFileAccess");
+    if (accChk) accChk.checked = this.allowLocalFileAccess !== false;
     // Always start with the Reset Database checkbox unticked
     const resetChk = document.getElementById("settingsResetDatabase");
     if (resetChk) resetChk.checked = false;
@@ -1613,9 +1616,12 @@ const App = {
         const s = data.settings || {};
         this.browserRoot  = s.browser_root  || "";
         this.outputDir    = s.output_dir    || "";
+        this.allowLocalFileAccess = s.allow_local_file_access !== 0;
         // Clear the on-screen fields to reflect the reset
         document.getElementById("settingsBrowserRoot").value = "";
         document.getElementById("settingsOutputDir").value   = "";
+        const accChkR = document.getElementById("settingsLocalFileAccess");
+        if (accChkR) accChkR.checked = true;
         // Endpoints' default models were cleared server-side; refresh them.
         try {
           this.endpoints = await API.listEndpoints();
@@ -1632,16 +1638,20 @@ const App = {
 
     const newBrowserRoot = document.getElementById("settingsBrowserRoot").value.trim();
     const newOutputDir   = document.getElementById("settingsOutputDir").value.trim();
+    const accChk         = document.getElementById("settingsLocalFileAccess");
+    const newAllowLocalAccess = accChk ? accChk.checked : true;
 
     const payload = {
       browser_root:  newBrowserRoot,
       output_dir:    newOutputDir,
+      allow_local_file_access: newAllowLocalAccess,
     };
 
     try {
       await API.saveSettings(payload);
       this.browserRoot  = newBrowserRoot;
       this.outputDir    = newOutputDir;
+      this.allowLocalFileAccess = newAllowLocalAccess;
       this._renderOutputDirBtn(); // re-render with updated app default
     } catch (err) {
       console.error("Failed to save settings:", err);

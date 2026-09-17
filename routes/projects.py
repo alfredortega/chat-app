@@ -7,6 +7,7 @@ routes land in C21 and the SSE job stream in C22.
 """
 
 import os
+import threading
 
 from flask import Blueprint, request, Response, stream_with_context
 
@@ -113,6 +114,9 @@ def create_project():
     if not template_id:
         # Plain folder creation, back-compatible with the legacy flow.
         return api_ok(db.create_folder(name), 201)
+
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to create a project.", 409)
 
     try:
         result = db.create_project_team(
@@ -256,6 +260,8 @@ def scan_project_route(project_id: int):
     """Trigger change detection (notify-mode scan)."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to scan the workspace.", 409)
     from propagation.notify import run_notify_scan
     report = run_notify_scan(project_id)
     return api_ok(report.to_dict())
@@ -267,6 +273,8 @@ def adopt_project_route(project_id: int):
     project = db.get_folder(project_id)
     if not project:
         return api_error("Folder not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to adopt a workspace.", 409)
     body = request.get_json(silent=True) or {}
     workspace = body.get("workspace_dir", "") or project.get("workspace_dir", "")
     if not workspace:
@@ -295,6 +303,8 @@ def propagate_route(project_id: int, change_id: int):
     event = next((e for e in db.list_change_events(project_id) if e["id"] == change_id), None)
     if event is None:
         return api_error("Change event not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to run propagation.", 409)
 
     from propagation.impact import queue_propagation_jobs
     jobs = queue_propagation_jobs(project_id, change_id,
@@ -303,11 +313,132 @@ def propagate_route(project_id: int, change_id: int):
     return api_ok({"queued": len(jobs), "jobs": jobs})
 
 
+@projects_bp.post("/<int:project_id>/changes/<int:change_id>/run-propagation")
+def run_propagation_route(project_id: int, change_id: int):
+    """Trigger the agent wave for a change event (asynchronous).
+
+    The "trigger the other agents" button. The wave (whole-artifact rewrites
+    through the real role models) takes minutes, so it runs in a background
+    thread and this route returns immediately with ``{"started": true}``.
+    Progress is visible via GET /api/projects/<id>/jobs/stream (or the change
+    history jobs list); the frontend polls until jobs are terminal.
+
+    Queueing is idempotent, and a second click while a wave is already running
+    is a no-op (409) rather than a second competing wave.
+    """
+    if not _get_project(project_id):
+        return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to run propagation.", 409)
+    event = next((e for e in db.list_change_events(project_id) if e["id"] == change_id), None)
+    if event is None:
+        return api_error("Change event not found", 404)
+
+    # Ensure jobs are queued (idempotent — existing jobs are left alone).
+    jobs = db.list_propagation_jobs(change_id)
+    if not jobs:
+        from propagation.impact import queue_propagation_jobs
+        jobs = queue_propagation_jobs(project_id, change_id,
+                                      event.get("changed_reqs") or [],
+                                      event.get("removed_reqs") or [])
+    if not jobs:
+        return api_error("No artifacts are affected by this change.", 400)
+
+    # If any job is non-terminal and not "proposed", a wave is already en route.
+    # failed/needs_input rows are re-runnable: reset them to pending so a retry
+    # of a crashed or rejected wave actually does something.
+    active = [
+        j["id"] for j in jobs
+        if j["state"] not in ("applied", "proposed", "cancelled",
+                              "completed", "rejected")
+    ]
+    reset_targets = [j["id"] for j in jobs if j["state"] in ("failed", "needs_input")]
+    if reset_targets:
+        for job_id in reset_targets:
+            db.update_propagation_job(job_id, state="pending", error="", attempts=0)
+        active = [j["id"] for j in db.list_propagation_jobs(change_id)
+                  if j["state"] not in ("applied", "proposed", "cancelled",
+                                        "completed", "rejected")]
+    if not active:
+        return api_error("This wave is already complete — no pending jobs.", 409)
+
+    endpoint = db.get_default_endpoint()
+    model_id = (endpoint or {}).get("default_model") or ""
+    if not model_id:
+        return api_error("No default model configured — set a default model on the default endpoint.", 400)
+
+    # Mark jobs running so the UI stream shows them as in-progress and a second
+    # click cannot double-run the wave.
+    for job_id in active:
+        db.update_propagation_job(job_id, state="running", attempts=(jobs and jobs[0].get("attempts", 0)) or 0)
+
+    from flask import current_app
+    app = current_app._get_current_object()
+    thread = threading.Thread(
+        target=_run_wave_background,
+        args=(app, project_id, change_id, endpoint, model_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return api_ok({
+        "started": True,
+        "change_id": change_id,
+        "jobs": len(active),
+    })
+
+
+def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, model_id: str) -> None:
+    """Run the propagation wave for a change off the request thread.
+
+    Executes in a dedicated app context (thread-safe session handling) so the
+    SSE job stream observes job state changes. Writes ``proposed`` proposals;
+    on failure marks the running jobs ``failed`` so the UI stops spinning.
+    """
+    def task():
+        from app import get_client
+        from propagation.agent import run_propagation_wave
+        from propagation.proposal import write_proposals
+
+        client = get_client(endpoint)
+        payloads = run_propagation_wave(
+            app, project_id, change_id, client, model_id=model_id,
+        )
+        ok_payloads = [p for p in payloads if p.status == "ok"]
+        if ok_payloads:
+            write_proposals(project_id, change_id, ok_payloads)
+        # Any job still "running" after the wave is a regenerator that failed to
+        # capture a rewrite; surface it rather than leaking an eternal spinner.
+        # Note: payloads are RewritePayload dataclasses (attribute access).
+        by_key = {p.artifact_key: p for p in payloads}
+        for job in db.list_propagation_jobs(change_id):
+            if job["state"] == "running":
+                target = by_key.get(job["artifact_key"])
+                db.update_propagation_job(job["id"], state="failed",
+                                          error=(target.errors[0] if target and target.errors
+                                                 else "No valid rewrite captured by the agent."))
+
+    try:
+        db.run_with_session(app, task)
+    except Exception as exc:
+        # Ensure the UI can never hang on a silently dead background job.
+        def mark_failed():
+            for job in db.list_propagation_jobs(change_id):
+                if job["state"] == "running":
+                    db.update_propagation_job(job["id"], state="failed", error=str(exc))
+        try:
+            db.run_with_session(app, mark_failed)
+        except Exception:
+            pass
+
+
 @projects_bp.post("/<int:project_id>/proposals/<int:job_id>/apply")
 def apply_proposal_route(project_id: int, job_id: int):
     """Apply a single proposal (409 when it went stale underneath)."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to apply proposals.", 409)
     from propagation.proposal import apply_proposal, proposal_is_stale
 
     job = _get_job(project_id, job_id)
@@ -328,6 +459,8 @@ def reject_proposal_route(project_id: int, job_id: int):
     """Reject a single proposal."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to reject proposals.", 409)
     from propagation.proposal import reject_proposal
 
     job = _get_job(project_id, job_id)
@@ -342,6 +475,8 @@ def apply_all_route(project_id: int, change_id: int):
     """Apply the whole wave."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to apply changes.", 409)
     from propagation.proposal import apply_all
     result = apply_all(project_id, change_id)
     return api_ok(result)
@@ -352,6 +487,8 @@ def rollback_route(project_id: int, change_id: int):
     """Revert the wave atomically via git."""
     if not _get_project(project_id):
         return api_error("Project not found", 404)
+    if not db.local_file_access_enabled():
+        return api_error("Local file access is disabled — enable it in Settings to roll back changes.", 409)
     from propagation.proposal import rollback_wave
     result = rollback_wave(project_id, change_id)
     if not result.get("ok"):

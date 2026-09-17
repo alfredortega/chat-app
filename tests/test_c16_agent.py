@@ -295,5 +295,77 @@ class TestRewriteGuards:
         assert not assessment.rejected
 
 
+class TestDiffOutputWave:
+    """The wave must accept agent diffs (not just whole-file content) and apply
+    them to the current artifact before validation."""
+
+    def test_wave_applies_diffs(self, tmp_db):
+        import difflib
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                from propagation.scanner import read_artifact_file
+                from propagation.impact import compute_affected_depths
+
+                # The wave runs jobs in (depth, artifact_key) order — script the
+                # fake client in that same order or the diffs get misapplied.
+                order = sorted(
+                    ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"],
+                    key=lambda k: (
+                        compute_affected_depths(pid, ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]).get(k, 0),
+                        k,
+                    ),
+                )
+                client = FakeOpenAIClient()
+                for key in order:
+                    rel = next(a["rel_path"] for a in db_module.list_artifacts(pid) if a["artifact_key"] == key)
+                    current, _ = read_artifact_file(tmp_dir, rel)
+                    if current and not current.endswith("\n"):
+                        current += "\n"  # mirror the wave's normalisation
+                    new = current + "\n## updated\n{key} body rewritten.\n".format(key=key)
+                    diff = "".join(difflib.unified_diff(
+                        current.splitlines(keepends=True),
+                        new.splitlines(keepends=True),
+                        fromfile=f"a/{key}", tofile=f"b/{key}",
+                    ))
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({"artifact_key": key, "diff": diff}),
+                    }])
+                    client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+                by_key = {p.artifact_key: p for p in payloads}
+                assert set(by_key) >= set(order)
+                for p in payloads:
+                    assert p.status in ("ok", "needs_review"), p
+                # The applied diff content must actually be present in the ok payloads.
+                for key, p in by_key.items():
+                    if p.status == "ok":
+                        assert f"{key} body rewritten." in p.content, (key, p.status)
+
+    def test_unappliable_diff_is_rejected(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                client = FakeOpenAIClient()
+                # Emit a diff that references lines that do not exist.
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "diff": "@@ -999,1 +999,1 @@\n-zzz\n+yyy\n",
+                    }),
+                }])
+                client.add_text_response("Done.")
+
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+                db_model = next(p for p in payloads if p.artifact_key == "DB-MODEL")
+                assert db_model.status == "rejected"
+                assert any("diff" in e.lower() for e in db_model.errors)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

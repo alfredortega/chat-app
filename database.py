@@ -806,7 +806,7 @@ def migrate_existing_api_keys():
 
 def _seed_personas_and_settings():
     # Settings default seeding
-    for key, val in [('output_dir', ''), ('browser_root', '')]:
+    for key, val in [('output_dir', ''), ('browser_root', ''), ('allow_local_file_access', '1')]:
         existing = db.session.get(Setting, key)
         if not existing:
             setting = Setting(key=key, value=val)
@@ -977,6 +977,18 @@ def get_setting(key: str) -> str | None:
     return setting.value if setting else None
 
 
+def local_file_access_enabled() -> bool:
+    """Global lock: when off, the model may only touch files uploaded to the
+    conversation (read_named_file / uploads) — no local paths, no disk writes,
+    and no propagation/scan runs. Defaults to enabled (secure default) even if
+    called outside an app context (e.g. import-time or test helpers)."""
+    try:
+        value = get_setting("allow_local_file_access")
+        return value != "0"
+    except Exception:
+        return True
+
+
 def set_setting(key: str, value: str):
     setting = db.session.get(Setting, key)
     if setting:
@@ -988,12 +1000,12 @@ def set_setting(key: str, value: str):
 
 
 def reset_settings() -> dict:
-    for key in ("output_dir", "browser_root"):
+    for key in ("output_dir", "browser_root", "allow_local_file_access"):
         setting = db.session.get(Setting, key)
         if setting:
-            setting.value = ""
+            setting.value = "1" if key == "allow_local_file_access" else ""
         else:
-            setting = Setting(key=key, value="")
+            setting = Setting(key=key, value="1" if key == "allow_local_file_access" else "")
             db.session.add(setting)
 
     endpoints = Endpoint.query.all()

@@ -106,5 +106,168 @@ class TestJobStream:
             assert resp.status_code == 404
 
 
+class TestRunPropagationRoute:
+    """The 'Run propagation' button end-to-end: queues jobs, runs the agent
+    wave through a scripted client, writes reviewable proposals."""
+
+    def _scripted_client(self):
+        from tests.fakes import FakeOpenAIClient
+
+        client = FakeOpenAIClient()
+        for key in ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+            client.add_tool_calls_response([{
+                "name": "write_artifact",
+                "arguments": json.dumps({
+                    "artifact_key": key,
+                    "content": f"# {key}\n\n## placeholder\n\n## S\n{key} new body.\n",
+                }),
+            }])
+            client.add_text_response("Done.")
+        return client
+
+    def test_run_propagation_writes_proposals(self, tmp_db, monkeypatch):
+        app = _app(tmp_db)
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "1")
+            tmp_dir = tempfile.mkdtemp()
+            folder = db_module.create_folder("SDLC")
+            pid = folder["id"]
+            db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+            for key in ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+                db_module.create_artifact_trace(pid, key, "REQ-014")
+            event = db_module.create_change_event(
+                project_id=pid, source_key="BA-REQ",
+                from_version=1, to_version=2, changed_reqs=["REQ-014"],
+            )
+            db_module.create_endpoint(
+                "fake", "http://fase.openai.test/v1",
+                api_key="k", default_model="m", is_default=True,
+            )
+
+        fake = self._scripted_client()
+        monkeypatch.setattr("app.get_client", lambda endpoint: fake)
+
+        try:
+            with app.test_client() as client:
+                resp = client.post(
+                    f"/api/projects/{pid}/changes/{event['id']}/run-propagation"
+                )
+            assert resp.status_code == 200
+            body = resp.get_json()
+            assert body is not None
+            assert body.get("error") is None, body
+            # Route returns immediately; the wave runs in a background thread.
+            assert body.get("started") is True, body
+
+            # Poll until the background wave marks jobs terminal.
+            import time
+            deadline = time.time() + 15
+            proposal_paths = []
+            while time.time() < deadline:
+                time.sleep(0.1)
+                with app.app_context():
+                    jobs = db_module.list_propagation_jobs(event["id"])
+                if jobs and all(j["state"] in (
+                        "applied", "proposed", "failed", "needs_input",
+                        "cancelled", "completed", "rejected") for j in jobs):
+                    break
+            else:
+                raise AssertionError("wave did not complete in time")
+
+            with app.app_context():
+                from propagation.proposal import list_proposals
+                proposals = list_proposals(pid, event["id"])
+            assert len(proposals) == 5, proposals
+            assert all(p["artifact_key"] in {"DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"} for p in proposals)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_propagation_blocks_when_locked(self, tmp_db):
+        app = _app(tmp_db)
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "0")
+            tmp_dir = tempfile.mkdtemp()
+            folder = db_module.create_folder("SDLC")
+            pid = folder["id"]
+            db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+            event = db_module.create_change_event(
+                project_id=pid, source_key="BA-REQ",
+                from_version=1, to_version=2, changed_reqs=["REQ-014"],
+            )
+        try:
+            with app.test_client() as client:
+                resp = client.post(
+                    f"/api/projects/{pid}/changes/{event['id']}/run-propagation"
+                )
+            assert resp.status_code == 409
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_background_bookkeeping_uses_payload_attributes(self, tmp_db, monkeypatch):
+        """Regression: the wave's error bookkeeping crashed with
+        "RewritePayload object is not subscriptable" because it used dict-style
+        access on dataclasses. A rejected payload must surface its own error on
+        the job instead of nuking everything with a crash traceback."""
+        from propagation.agent import RewritePayload
+
+        def fake_run_wave(app, project_id, change_id, client, model_id=""):
+            return [
+                RewritePayload(
+                    artifact_key="DB-MODEL", content="",
+                    version=2, status="rejected",
+                    errors=["Shrink guard: rewrite is a summary"],
+                ),
+                RewritePayload(
+                    artifact_key="UX-WIRE", content="# UX-WIRE\nbody",
+                    version=2, status="ok", errors=[],
+                ),
+            ]
+
+        def fake_write_proposals(project_id, change_id, payloads):
+            return [{"artifact_key": p.artifact_key} for p in payloads]
+
+        monkeypatch.setattr("app.get_client", lambda endpoint: object())
+        # _run_wave_background imports these inside its task() via
+        # `from propagation.agent import run_propagation_wave` / `from
+        # propagation.proposal import write_proposals`, so we patch the source
+        # modules.
+        monkeypatch.setattr("propagation.agent.run_propagation_wave", fake_run_wave)
+        monkeypatch.setattr("propagation.proposal.write_proposals", fake_write_proposals)
+        # Cache a reference so the imports above resolve inside the test body.
+        import propagation.agent  # noqa: F401
+        import propagation.proposal  # noqa: F401
+
+        app = _app(tmp_db)
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            with app.app_context():
+                folder = db_module.create_folder("SDLC")
+                pid = folder["id"]
+                db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+                event = db_module.create_change_event(
+                    project_id=pid, source_key="BA-REQ",
+                    from_version=1, to_version=2, changed_reqs=["REQ-014"],
+                )
+                db_module.create_propagation_job(event["id"], "DB-MODEL", persona_id=None, depth=1)
+                db_module.create_propagation_job(event["id"], "UX-WIRE", persona_id=None, depth=1)
+                for job in db_module.list_propagation_jobs(event["id"]):
+                    db_module.update_propagation_job(job["id"], state="running")
+
+                from routes.projects import _run_wave_background
+                with app.test_request_context():
+                    _run_wave_background(app, pid, event["id"], endpoint=None, model_id="m")
+
+                jobs = {j["artifact_key"]: j for j in db_module.list_propagation_jobs(event["id"])}
+                # DB-MODEL carries its own rejection reason, parsed correctly.
+                assert jobs["DB-MODEL"]["state"] == "failed"
+                assert jobs["DB-MODEL"]["error"] == "Shrink guard: rewrite is a summary"
+                # UX-WIRE was 'ok' but the fake wave never wrote its proposal, so
+                # it is still running -> surfaced as a clean failure, not a crash.
+                assert jobs["UX-WIRE"]["state"] == "failed"
+                assert "object is not subscriptable" not in jobs["UX-WIRE"]["error"]
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

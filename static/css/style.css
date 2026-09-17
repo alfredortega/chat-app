@@ -755,14 +755,67 @@ body {
   vertical-align: middle;
 }
 
-/* ── Project panel (Phase 5) ─────────────────────────────────────────────── */
+/* ── Project panel overlay (Phase 5) ──────────────────────────────────────── */
+
+.project-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1040;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.project-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.project-panel-window {
+  position: relative;
+  width: min(96vw, 1000px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-modal-bg);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  z-index: 1041;
+}
+
+.project-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-navbar-bg);
+}
+
+.project-panel-header h5 {
+  color: var(--app-text);
+  margin: 0;
+}
+
+.project-panel-body {
+  padding: 0.75rem 1rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
 
 .project-panel {
-  padding: 0.5rem;
+  padding: 0;
 }
 
 .project-role-group {
   margin-bottom: 0.75rem;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  overflow: hidden;
 }
 
 .project-role-header {
@@ -770,7 +823,8 @@ body {
   align-items: center;
   gap: 0.5rem;
   font-weight: 600;
-  margin-bottom: 0.25rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--app-surface-2);
 }
 
 .project-role-name {
@@ -781,8 +835,22 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.15rem 0.5rem;
+  padding: 0.3rem 0.75rem;
   font-size: 0.875rem;
+}
+
+.project-artifact-row:nth-child(odd) {
+  background: var(--app-surface-2);
+}
+
+.project-panel-body h6 {
+  font-weight: 600;
+  color: var(--app-text-muted);
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--app-border);
+  padding-bottom: 0.2rem;
 }
 
 .project-artifact-key {
@@ -792,16 +860,29 @@ body {
 
 .project-change-row,
 .project-issue-row,
-.project-request-row {
+.project-request-row,
+.project-assumption-group {
   font-size: 0.875rem;
   display: flex;
   gap: 0.5rem;
-  padding: 0.2rem 0;
-  border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+  padding: 0.35rem 0.6rem;
+  margin-bottom: 0.3rem;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
 }
 
 .project-change-id {
   font-family: var(--bs-font-monospace, monospace);
+}
+
+.project-change-actions {
+  gap: 0.35rem;
+}
+
+.project-change-actions .btn {
+  font-size: 0.78rem;
+  padding: 0.1rem 0.5rem;
 }
 
 .project-summary .badge {
@@ -825,6 +906,21 @@ body {
 
 .issue-blocking    { color: #e35d6a; font-weight: 600; }
 .issue-assumption  { color: #d4a017; font-weight: 600; }
+
+/* Open questions in the project panel stack question, answer box and buttons
+   vertically so agents' questions are answerable directly from the panel. */
+.project-issue-row {
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+}
+
+.project-issue-question {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
 
 /* ── Diff view (C24) ─────────────────────────────────────────────────────── */
 

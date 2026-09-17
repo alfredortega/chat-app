@@ -198,6 +198,31 @@ class TestWorkerStartup:
         })
         assert app.config.get("PROPAGATION_WORKER") is None
 
+    def test_app_startup_recovers_stuck_running_jobs(self, tmp_db):
+        """A job left 'running' by a killed wave is reset to 'pending' on the
+        next app boot so the user can re-run propagation."""
+        # Simulate a crashed wave: create a job, then strand it in 'running'.
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        folder = db_module.create_folder("P")
+        pid = folder["id"]
+        event = db_module.create_change_event(pid, "BA-REQ", 1, 2)
+        job = db_module.create_propagation_job(event["id"], "DB-MODEL", 1, 1)
+        db_module.update_propagation_job(job["id"], state="running")
+
+        # A fresh boot (new create_app) must reset the stranded job.
+        app2 = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app2.app_context():
+            rows = db_module.list_propagation_jobs(event["id"])
+        assert rows[0]["state"] == "pending"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -104,12 +104,6 @@ const Conversations = {
     const folders = (typeof Folders !== "undefined") ? (showArchived ? Folders.list : Folders.list.filter((f) => !f.archived)) : [];
     const allConvs = showArchived ? this._list : this._list.filter((c) => !c.archived);
 
-    if (allConvs.length === 0 && folders.length === 0) {
-      container.innerHTML =
-        '<p class="text-secondary text-center small mt-3 px-2">No conversations yet</p>';
-      return;
-    }
-
     // ── "New Folder" button at the top ──
     const newFolderBtn = document.createElement("div");
     newFolderBtn.className = "px-2 pt-1 pb-1 d-flex gap-1";
@@ -123,6 +117,14 @@ const Conversations = {
     newFolderBtn.querySelector("#btnNewFolder").addEventListener("click", () => Folders.createFolder());
     newFolderBtn.querySelector("#btnImportFolder").addEventListener("click", () => Folders.promptImport());
     container.appendChild(newFolderBtn);
+
+    if (allConvs.length === 0 && folders.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "text-secondary text-center small mt-3 px-2";
+      empty.textContent = "No conversations yet";
+      container.appendChild(empty);
+      return;
+    }
 
     // ── Render each folder ──
     folders.forEach((folder) => {
@@ -183,6 +185,15 @@ const Conversations = {
         e.stopPropagation();
         App.newConversation(folder.id);
       });
+      const projectPanelBtn = folderEl.querySelector(".btn-folder-project-panel");
+      if (projectPanelBtn) {
+        projectPanelBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (typeof ProjectPanel !== "undefined") {
+            ProjectPanel.open(folder.id);
+          }
+        });
+      }
       folderEl.querySelector(".btn-folder-rename").addEventListener("click", (e) => {
         e.stopPropagation();
         Folders.startRename(folder.id);

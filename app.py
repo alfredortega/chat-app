@@ -31,7 +31,7 @@ from flask_cors import CORS
 from openai import OpenAI
 
 import database as db
-from tools import TOOLS, execute_tool_call
+from tools import TOOLS, build_tools, execute_tool_call
 from file_handler import (
     ensure_upload_dir, allowed_extension, extract_text, evict_upload_cache,
     build_file_context,
@@ -109,6 +109,17 @@ def create_app(config=None):
             worker = PropagationWorker(app_inst)
             worker.start()
             app_inst.config["PROPAGATION_WORKER"] = worker
+
+    # Crash/restart safety: any propagation job left in 'running' by a wave that
+    # was interrupted (server restart, dev-reloader reload, process kill) would
+    # otherwise stay 'running' forever — no proposals, no status updates, and a
+    # UI that times out. Reset those to 'pending' so the wave can be re-run.
+    try:
+        with app_inst.app_context():
+            from propagation.worker import recover_stuck_running
+            recover_stuck_running()
+    except Exception:
+        pass
 
     return app_inst
 
@@ -280,6 +291,7 @@ def get_settings():
     return jsonify({
         "output_dir":     db.get_setting("output_dir")     or "",
         "browser_root":   db.get_setting("browser_root")   or "",
+        "allow_local_file_access": int(db.local_file_access_enabled()),
     })
 
 
@@ -290,6 +302,8 @@ def update_settings():
         db.set_setting("output_dir", data["output_dir"])
     if "browser_root" in data:
         db.set_setting("browser_root", data["browser_root"])
+    if "allow_local_file_access" in data:
+        db.set_setting("allow_local_file_access", "1" if data["allow_local_file_access"] else "0")
     return jsonify({"ok": True})
 
 
@@ -473,7 +487,7 @@ def chat(conv_id):
         # Disclose what context was injected for this message (scope/tokens/warn)
         yield sse_event({"type": "scope", "meta": scope_meta})
 
-        tools = TOOLS if tools_on else None
+        tools = build_tools("chat") if tools_on else None
 
         def execute_tool_fn(fn_name, fn_args, output_dir):
             result = execute_tool_call(
@@ -499,59 +513,70 @@ def chat(conv_id):
         pending_tool_calls = None
         pending_assistant_content = ""
 
-        for event in events:
-            if event["type"] == "token":
-                yield sse_event(event)
+        try:
+            for event in events:
+                if event["type"] == "token":
+                    yield sse_event(event)
 
-            elif event["type"] == "assistant_message":
-                pending_assistant_content = event.get("content", "")
-                if event.get("tool_calls"):
-                    pending_tool_calls = event["tool_calls"]
-                    # Persist assistant message with tool calls
+                elif event["type"] == "assistant_message":
+                    pending_assistant_content = event.get("content", "")
+                    if event.get("tool_calls"):
+                        pending_tool_calls = event["tool_calls"]
+                        # Persist assistant message with tool calls
+                        db.add_message(
+                            conv_id,
+                            role="assistant",
+                            content=pending_assistant_content,
+                            tool_calls_json=json.dumps(pending_tool_calls),
+                        )
+                        # Add to history for next iteration
+                        history.append({
+                            "role": "assistant",
+                            "content": pending_assistant_content or None,
+                            "tool_calls": pending_tool_calls,
+                        })
+                    else:
+                        # Plain assistant message
+                        if pending_assistant_content:
+                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                        yield sse_event({"type": "done"})
+                        return
+
+                elif event["type"] == "tool_result":
+                    # The tool was executed by chat_service, we just yield the result
+                    yield sse_event(event)
+
+                elif event["type"] == "tool_message":
+                    # Persist tool result message
                     db.add_message(
                         conv_id,
-                        role="assistant",
-                        content=pending_assistant_content,
-                        tool_calls_json=json.dumps(pending_tool_calls),
+                        role="tool",
+                        content=event["content"],
+                        tool_call_id=event["tool_call_id"],
                     )
-                    # Add to history for next iteration
                     history.append({
-                        "role": "assistant",
-                        "content": pending_assistant_content or None,
-                        "tool_calls": pending_tool_calls,
+                        "role": "tool",
+                        "tool_call_id": event["tool_call_id"],
+                        "content": _cap_tool_content(event["content"]),
                     })
-                else:
-                    # Plain assistant message
-                    if pending_assistant_content:
-                        db.add_message(conv_id, role="assistant", content=pending_assistant_content)
-                    yield sse_event({"type": "done"})
+
+                elif event["type"] == "error":
+                    yield sse_event(event)
                     return
 
-            elif event["type"] == "tool_result":
-                # The tool was executed by chat_service, we just yield the result
-                yield sse_event(event)
-
-            elif event["type"] == "tool_message":
-                # Persist tool result message
-                db.add_message(
-                    conv_id,
-                    role="tool",
-                    content=event["content"],
-                    tool_call_id=event["tool_call_id"],
-                )
-                history.append({
-                    "role": "tool",
-                    "tool_call_id": event["tool_call_id"],
-                    "content": _cap_tool_content(event["content"]),
-                })
-
-            elif event["type"] == "error":
-                yield sse_event(event)
-                return
-
-            elif event["type"] == "done":
-                yield sse_event(event)
-                return
+                elif event["type"] == "done":
+                    yield sse_event(event)
+                    return
+        finally:
+            # After a BA-inbox turn, fold any requirement docs the BA wrote via
+            # write_file into the registered BA-REQ artifact so scanning and
+            # propagation can react. Deterministic and guarded: never breaks the
+            # stream, and is a no-op for non-BA conversations.
+            try:
+                from propagation.consolidate import consolidate_ba_output
+                consolidate_ba_output(conv_id)
+            except Exception:
+                pass
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
@@ -596,7 +621,7 @@ def regenerate(conv_id):
         return None
 
     def generate():
-        tools = TOOLS if tools_on else None
+        tools = build_tools("chat") if tools_on else None
 
         # Disclose what context was injected for this message (scope/tokens/warn)
         yield sse_event({"type": "scope", "meta": scope_meta})
@@ -622,54 +647,62 @@ def regenerate(conv_id):
 
         pending_assistant_content = ""
 
-        for event in events:
-            if event["type"] == "token":
-                yield sse_event(event)
+        try:
+            for event in events:
+                if event["type"] == "token":
+                    yield sse_event(event)
 
-            elif event["type"] == "assistant_message":
-                pending_assistant_content = event.get("content", "")
-                if event.get("tool_calls"):
-                    # Persist assistant message with tool calls
+                elif event["type"] == "assistant_message":
+                    pending_assistant_content = event.get("content", "")
+                    if event.get("tool_calls"):
+                        # Persist assistant message with tool calls
+                        db.add_message(
+                            conv_id,
+                            role="assistant",
+                            content=pending_assistant_content,
+                            tool_calls_json=json.dumps(event["tool_calls"]),
+                        )
+                        history.append({
+                            "role": "assistant",
+                            "content": pending_assistant_content or None,
+                            "tool_calls": event["tool_calls"],
+                        })
+                    else:
+                        if pending_assistant_content:
+                            db.add_message(conv_id, role="assistant", content=pending_assistant_content)
+                        yield sse_event({"type": "done"})
+                        return
+
+                elif event["type"] == "tool_result":
+                    yield sse_event(event)
+
+                elif event["type"] == "tool_message":
                     db.add_message(
                         conv_id,
-                        role="assistant",
-                        content=pending_assistant_content,
-                        tool_calls_json=json.dumps(event["tool_calls"]),
+                        role="tool",
+                        content=event["content"],
+                        tool_call_id=event["tool_call_id"],
                     )
                     history.append({
-                        "role": "assistant",
-                        "content": pending_assistant_content or None,
-                        "tool_calls": event["tool_calls"],
+                        "role": "tool",
+                        "tool_call_id": event["tool_call_id"],
+                        "content": _cap_tool_content(event["content"]),
                     })
-                else:
-                    if pending_assistant_content:
-                        db.add_message(conv_id, role="assistant", content=pending_assistant_content)
-                    yield sse_event({"type": "done"})
+
+                elif event["type"] == "error":
+                    yield sse_event(event)
                     return
 
-            elif event["type"] == "tool_result":
-                yield sse_event(event)
-
-            elif event["type"] == "tool_message":
-                db.add_message(
-                    conv_id,
-                    role="tool",
-                    content=event["content"],
-                    tool_call_id=event["tool_call_id"],
-                )
-                history.append({
-                    "role": "tool",
-                    "tool_call_id": event["tool_call_id"],
-                    "content": _cap_tool_content(event["content"]),
-                })
-
-            elif event["type"] == "error":
-                yield sse_event(event)
-                return
-
-            elif event["type"] == "done":
-                yield sse_event(event)
-                return
+                elif event["type"] == "done":
+                    yield sse_event(event)
+                    return
+        finally:
+            # Same post-BA-chat consolidation as /chat (see above).
+            try:
+                from propagation.consolidate import consolidate_ba_output
+                consolidate_ba_output(conv_id)
+            except Exception:
+                pass
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
@@ -1279,12 +1312,60 @@ def import_folder():
 def write_file_direct():
     """Write content directly to a file path without going through the chat loop.
     Fix #13: removed redundant local re-import of execute_tool_call and json.
-    The write is jailed to the configured output directory via _write_file."""
+    The write is jailed to the configured output directory via _write_file.
+
+    When global local file access is disabled (Settings → "Allow local file
+    access"), the write is re-routed into the conversation's upload folder and
+    registered as an uploaded file, so it shows in the file list, is previewable,
+    and is readable by the model via read_named_file. ``conversation_id`` is then
+    required.
+    """
     data    = request.get_json(force=True)
     path    = data.get("path", "").strip()
     content = data.get("content", "")
     if not path:
         return jsonify({"success": False, "display": "No path provided", "result": "No path"}), 400
+
+    if not db.local_file_access_enabled():
+        conv_id = data.get("conversation_id")
+        if not conv_id:
+            return jsonify({"success": False,
+                            "display": "Local file access is disabled — saving needs a conversation_id",
+                            "result": "Local file access is disabled"}), 400
+        try:
+            conv_id = int(conv_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False,
+                            "display": "Invalid conversation_id",
+                            "result": "Invalid conversation_id"}), 400
+        try:
+            from file_handler import ensure_upload_dir, extract_text
+            base_name = os.path.basename(path.replace("\\", "/"))
+            upload_dir = ensure_upload_dir(conv_id)
+            ext = os.path.splitext(base_name)[1].lower()
+            disk_name = f"{uuid.uuid4().hex}{ext}"
+            disk_path = os.path.join(upload_dir, disk_name)
+            with open(disk_path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            size_bytes = os.path.getsize(disk_path)
+            text, _ = extract_text(disk_path, base_name)
+            db.add_conv_file(
+                conversation_id=conv_id,
+                original_name=base_name,
+                disk_path=disk_path,
+                size_bytes=size_bytes,
+                char_count=len(text),
+                snippet=text[:500],
+            )
+            return jsonify({
+                "success": True,
+                "display": f"✅ Saved to conversation files: `{base_name}`",
+                "result": f"File saved to conversation uploads: {disk_path}",
+            })
+        except Exception as exc:
+            return jsonify({"success": False, "display": f"❌ Failed to save file: {exc}",
+                            "result": f"Failed to save file: {exc}"}), 500
+
     if not (db.get_setting("output_dir") or "").strip():
         return jsonify({"success": False, "display": "No output directory configured",
                         "result": "No output directory configured"}), 400
@@ -1324,22 +1405,38 @@ def _build_system_prompt(
     Returns (base_system, output_dir).
     """
     if tools_on:
-        base_system = (
-            "You are a helpful, knowledgeable general-purpose AI assistant. "
-            "Answer all questions, help with analysis, writing, coding, math, "
-            "research, and any other topic the user asks about. "
-            "You have access to the following tools — use them only when they "
-            "genuinely help the user:\n"
-            "- write_file: save content to disk (only when user asks to save/create a file)\n"
-            "- read_file: read an existing file from disk by absolute path\n"
-            "- read_named_file: read the full content of a conversation file or "
-            "linked-folder file by name (use when a file was only previewed)\n"
-            "- list_directory: list files and folders in a directory by absolute path\n"
-            "- run_python: execute a Python snippet and return its output\n"
-            "For normal conversational responses, answer directly in the chat. "
-            "When the output naturally consists of multiple distinct documents, "
-            "call write_file separately for each one with a descriptive filename."
-        )
+        if db.local_file_access_enabled():
+            base_system = (
+                "You are a helpful, knowledgeable general-purpose AI assistant. "
+                "Answer all questions, help with analysis, writing, coding, math, "
+                "research, and any other topic the user asks about. "
+                "You have access to the following tools — use them only when they "
+                "genuinely help the user:\n"
+                "- write_file: save content to disk (only when user asks to save/create a file)\n"
+                "- read_file: read an existing file from disk by absolute path\n"
+                "- read_named_file: read the full content of a conversation file or "
+                "linked-folder file by name (use when a file was only previewed)\n"
+                "- list_directory: list files and folders in a directory by absolute path\n"
+                "- run_python: execute a Python snippet and return its output\n"
+                "For normal conversational responses, answer directly in the chat. "
+                "When the output naturally consists of multiple distinct documents, "
+                "call write_file separately for each one with a descriptive filename."
+            )
+        else:
+            base_system = (
+                "You are a helpful, knowledgeable general-purpose AI assistant. "
+                "Answer all questions, help with analysis, writing, coding, math, "
+                "research, and any other topic the user asks about. "
+                "You have access to the following tools — use them only when they "
+                "genuinely help the user:\n"
+                "- read_named_file: read the full content of a file uploaded to this "
+                "conversation by name (use when a file was only previewed)\n"
+                "- fetch_webpage: fetch an approved research webpage\n"
+                "For normal conversational responses, answer directly in the chat. "
+                "Local file access is disabled: you cannot read, write or list files "
+                "on local disk, and you cannot run code. Files you may reference are "
+                "limited to those uploaded to this conversation."
+            )
     else:
         base_system = (
             "You are a helpful, knowledgeable general-purpose AI assistant. "
@@ -1349,7 +1446,7 @@ def _build_system_prompt(
         )
 
     output_dir = conv.get("output_dir") or db.get_setting("output_dir") or ""
-    if output_dir and tools_on:
+    if output_dir and tools_on and db.local_file_access_enabled():
         base_system += (
             f"\n\nWhen using write_file, pass ONLY a bare filename (e.g. 'report.md') "
             f"— never include a directory path. Files are automatically saved to: {output_dir}"

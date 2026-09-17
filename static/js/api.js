@@ -455,6 +455,13 @@ const API = {
     return res.json();
   },
 
+  /** Run the agent wave for a change event, producing reviewable proposals. */
+  async runPropagation(id, changeId) {
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/run-propagation`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
   async applyProposal(id, jobId) {
     const res = await fetch(`/api/projects/${id}/proposals/${jobId}/apply`, { method: "POST" });
     if (!res.ok) throw new Error(await res.text());

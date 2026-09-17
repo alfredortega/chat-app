@@ -2,9 +2,10 @@
 Propagation agent invocation (C16).
 
 Each propagation job runs as a real model conversation (audit trail lives in
-the normal chat tables). The agent performs a **whole-artifact rewrite** (D15)
-through the ``write_artifact`` tool. Rewrites are validated by the server-side
-guards below and kept **in memory** as a wave overlay -- nothing is written to
+the normal chat tables). The agent produces an artifact **update** (D15) through
+the ``write_artifact`` tool — most cheaply as a unified diff, with full-content
+fallback for tiny files. The update is applied in memory, validated by the
+server-side guards below, and kept as a wave overlay — nothing is written to
 disk and no proposals are persisted in this commit (deferred to C17).
 
 Same-role batching (D16): artifacts owned by one role for one change event run
@@ -13,6 +14,7 @@ updated text through the overlay.
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -29,6 +31,11 @@ UPSTREAM_ARTIFACT_CAP = 24_000
 CURRENT_ARTIFACT_CAP = 60_000
 DIFF_CAP = 12_000
 PERSONA_CAP = 4_000
+
+# Cap generated output on every propagation model call. Agents now return
+# compact unified diffs, so a few thousand tokens is plenty and a runaway that
+# used to emit 100k+ tokens is bounded. Override with PROPAGATION_MAX_OUT_TOKENS.
+MAX_OUTPUT_TOKENS = int(os.getenv("PROPAGATION_MAX_OUT_TOKENS", "6000"))
 
 
 # ── Rewrite guards (pure, server-side) ─────────────────────────────────────────
@@ -169,12 +176,32 @@ class WaveOverlay:
 
     def __init__(self, base_contents: dict[str, str]):
         self._contents = dict(base_contents)
+        # Caches the smart-previewed form of each artifact so the same huge
+        # upstream (e.g. BA-REQ) is only downsampled once per wave instead of
+        # once per job. Invalidated on set().
+        self._preview_cache: dict[str, tuple[str, str]] = {}
 
     def get(self, artifact_key: str, default: str = "") -> str:
         return self._contents.get(artifact_key, default)
 
     def set(self, artifact_key: str, content: str) -> None:
         self._contents[artifact_key] = content
+        self._preview_cache.pop(artifact_key, None)
+
+    def preview(self, artifact_key: str, max_chars: int) -> tuple[str, int]:
+        """
+        Return ``(smart_preview, omitted_chars)`` for an artifact, memoized for
+        the lifetime of the wave (invalidated whenever the artifact is set).
+        """
+        from file_handler import _smart_preview
+
+        cached = self._preview_cache.get(artifact_key)
+        if cached is not None and cached[0] == str(max_chars):
+            return cached[1]
+        content = self._contents.get(artifact_key, "")
+        preview = _smart_preview(content, max_chars)
+        self._preview_cache[artifact_key] = (str(max_chars), preview)
+        return preview
 
     def keys(self):
         return list(self._contents.keys())
@@ -215,10 +242,13 @@ def build_agent_prompt(
 
     instructions = (
         "You are updating ONE artifact as part of a coordinated change. "
-        "Return the COMPLETE new document (doing a whole-file rewrite), "
-        "preserving every unaffected section verbatim. Do not summarise. "
-        "Use the write_artifact tool with the full new content. "
-        "The server will set front-matter (version, origin, derives_from) - "
+        "Emit the changes as a unified diff and pass it to the write_artifact "
+        "tool in the 'diff' parameter. The server will apply the diff to the "
+        "current artifact. Only include what actually changed from the CURRENT "
+        "ARTIFACT; do not regenerate unchanged sections, do not summarise, and "
+        "do not pass the whole file as 'content' unless the artifact is tiny. "
+        "Use standard hunks (\"@@ -l,c +l,c @@\" with context, removed and added "
+        "lines). The server will set front-matter (version, origin, derives_from) - "
         "do not invent your own version numbers."
     )
 
@@ -287,6 +317,11 @@ def run_propagation_wave(
             artifact_meta[art["artifact_key"]] = art
             from propagation.scanner import read_artifact_file
             content, _ = read_artifact_file(workspace_dir, art["rel_path"])
+            # Normalise to a single trailing newline: difflib/git unidiffs are
+            # only clean when the source is newline-terminated (files without a
+            # trailing newline produce fused -/+ lines that cannot be applied).
+            if content and not content.endswith("\n"):
+                content += "\n"
             overlay.set(art["artifact_key"], content)
 
         event = next(
@@ -301,6 +336,11 @@ def run_propagation_wave(
 
         jobs = db_module.list_propagation_jobs(change_id)
 
+        # Load the dependency graph ONCE per wave — every job's upstream prompt
+        # reads from this same snapshot (D13). Re-querying per job was wasted DB
+        # work on projects with many artifacts.
+        deps = db_module.list_artifact_deps(project_id)
+
         from propagation.impact import compute_affected_depths
         affected = [j["artifact_key"] for j in jobs]
         depths = compute_affected_depths(project_id, affected)
@@ -311,6 +351,10 @@ def run_propagation_wave(
         payloads: list[RewritePayload] = []
         for job in jobs_sorted:
             artifact_key = job["artifact_key"]
+            # Surfaces per-agent progress: mark THIS job as the one currently
+            # being worked and push previously finished jobs to a terminal
+            # state so the UI can show "who is assessing changes now".
+            db_module.update_propagation_job(job["id"], state="running")
             meta = artifact_meta.get(artifact_key, {})
             role = meta.get("role", "") or _role_from_template(project_id, artifact_key)
             persona_id = meta.get("role_persona_id")
@@ -319,7 +363,7 @@ def run_propagation_wave(
             current = overlay.get(artifact_key)
 
             # Scoped upstream context from the overlay (only declared upstreams).
-            context = _build_upstream_context(project_id, artifact_key, overlay)
+            context = _build_upstream_context(project_id, artifact_key, overlay, deps=deps)
 
             messages = build_agent_prompt(
                 persona_prompt,
@@ -332,11 +376,11 @@ def run_propagation_wave(
             old_version = meta.get("version", 1)
             derives_from = meta.get("derives_from") or []
 
-            rewrite_content = {"content": None}
+            rewrite_diff = {"diff": None}
 
             def make_tool_handler() -> Callable[[str, str], dict]:
                 def handler(name: str, args_json: str, output_dir: str = ""):
-                    nonlocal rewrite_content
+                    nonlocal rewrite_diff
                     if name == "write_artifact":
                         try:
                             args = json.loads(args_json)
@@ -351,7 +395,18 @@ def run_propagation_wave(
                                 "display": f"Unregistered artifact key: {target_key}",
                                 "result": f"Artifact key '{target_key}' is not registered.",
                             }
-                        rewrite_content["content"] = args.get("content", "")
+                        # Prefer the cheap diff form; fall back to full content
+                        # for tiny artifacts or older model behaviour.
+                        if "diff" in args and args.get("diff"):
+                            rewrite_diff["diff"] = args["diff"]
+                        elif "content" in args:
+                            rewrite_diff["content"] = args["content"]
+                        else:
+                            return {
+                                "success": False,
+                                "display": "No diff or content in write_artifact.",
+                                "result": "Provide either a unified diff or the full content.",
+                            }
                         return {
                             "success": True,
                             "display": "Captured rewrite in memory.",
@@ -383,6 +438,7 @@ def run_propagation_wave(
                 max_iterations=max_iterations,
                 execute_tool_fn=handler,
                 output_dir=workspace_dir,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
             )
             for ev in events:
                 if ev.get("type") == "error":
@@ -396,16 +452,30 @@ def run_propagation_wave(
                     ))
                     break
 
-            model_content = rewrite_content.get("content")
+            # Resolve the rewritten full content: either the model handed us
+            # the whole file ('content') or, much more cheaply, a unified diff
+            # that we apply against the artifact's current overlay content.
+            from propagation.diff import apply_unified_diff
+
+            model_content = None
+            diff_error = None
+            if "content" in rewrite_diff:
+                model_content = rewrite_diff["content"]
+            elif rewrite_diff.get("diff"):
+                model_content = apply_unified_diff(current, rewrite_diff["diff"])
+                if model_content is None:
+                    diff_error = "The model returned a diff that could not be applied to the current artifact."
+                    model_content = None
+
             if model_content is None:
-                # No rewrite was captured -> summary-instead-of-doc is the
-                # common cause. Record a rejected payload so the assertion works.
+                # No usable rewrite was captured (missing, or an unappliable
+                # diff). Record a rejected payload so the assertion works.
                 payloads.append(RewritePayload(
                     artifact_key=artifact_key,
                     content="",
                     version=old_version,
                     status="rejected",
-                    errors=["No write_artifact call returned by the agent."],
+                    errors=[diff_error or "No write_artifact call returned by the agent."],
                     prompt=json.dumps(messages, default=str),
                 ))
                 continue
@@ -433,6 +503,11 @@ def run_propagation_wave(
             payloads.append(payload)
 
             if assessment.ok:
+                # This artifact is done: flip the job to a terminal state so a
+                # polling UI sees the wave advancing ("which agent is assessing
+                # changes now" = the first non-terminal job). write_proposals
+                # upgrades ok jobs to 'proposed' after the loop.
+                db_module.update_propagation_job(job["id"], state="completed")
                 # Publish into the wave overlay for downstream prompts (D4).
                 try:
                     fm, _ = parse_front_matter(normalized)
@@ -456,22 +531,24 @@ def _role_from_template(project_id: int, artifact_key: str) -> str:
     return "Document Author"
 
 
-def _build_upstream_context(project_id: int, artifact_key: str, overlay: WaveOverlay) -> str:
+def _build_upstream_context(project_id: int, artifact_key: str, overlay: WaveOverlay, deps: list[dict] | None = None) -> str:
     """
     Build scoped upstream context from the overlay for the artifact being
     updated (D13). Only declared upstream artifacts are injected.
-    """
-    import database as db_module
 
-    deps = db_module.list_artifact_deps(project_id)
+    ``deps`` may be passed in (loaded once per wave) to avoid re-querying the
+    dependency graph for every job; previews come from the overlay's memo cache.
+    """
+    if deps is None:
+        import database as db_module
+        deps = db_module.list_artifact_deps(project_id)
     upstream_keys = [d["upstream_key"] for d in deps if d["downstream_key"] == artifact_key]
 
-    from file_handler import _smart_preview
     parts = []
     for key in sorted(upstream_keys):
         content = overlay.get(key, "")
         if content:
-            preview, omitted = _smart_preview(content, UPSTREAM_ARTIFACT_CAP)
+            preview, omitted = overlay.preview(key, UPSTREAM_ARTIFACT_CAP)
             note = f" [preview: {omitted:,} chars omitted]" if omitted else ""
             parts.append(f"--- ARTIFACT: {key} ---{note}\n{preview}\n--- END: {key} ---")
     return "\n\n".join(parts) if parts else "(no upstream artifacts declared)"

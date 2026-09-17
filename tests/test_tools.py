@@ -42,6 +42,94 @@ class TestBuildTools:
         assert "write_artifact" not in tool_names
 
 
+class TestLocalFileAccessLock:
+    """Global 'allow_local_file_access' setting must filter the tool schema and
+    deny local-access tools server-side (universal — propagation included)."""
+
+    def _set_locked(self, locked: bool, tmp_db):
+        from app import create_app
+        import database as db_module
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "0" if locked else "1")
+            assert db_module.local_file_access_enabled() is not locked
+
+    def test_chat_profile_hides_local_tools_when_locked(self, tmp_db):
+        from app import create_app
+        import database as db_module
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "0")
+            tool_defs = tools.build_tools("chat")
+        names = [t["function"]["name"] for t in tool_defs]
+        assert "write_file" not in names
+        assert "read_file" not in names
+        assert "list_directory" not in names
+        assert "run_python" not in names
+        # Upload-scoped and network tools stay available.
+        assert "read_named_file" in names
+        assert "fetch_webpage" in names
+
+    def test_propagation_profile_has_no_tools_when_locked(self, tmp_db):
+        from app import create_app
+        import database as db_module
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "0")
+            assert tools.build_tools("propagation") == []
+
+    def test_execute_tool_call_denied_when_locked(self, tmp_db):
+        from app import create_app
+        import database as db_module
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app.app_context():
+            db_module.set_setting("allow_local_file_access", "0")
+            result = tools.execute_tool_call(
+                "write_file",
+                json.dumps({"path": "test.txt", "content": "hello"}),
+                context="chat",
+                output_dir="/tmp",
+            )
+        assert result["success"] is False
+        assert "disabled" in result["result"]
+
+    def test_execute_tool_call_allowed_when_enabled(self, tmp_db):
+        from app import create_app
+        app = create_app(config={
+            "SQLALCHEMY_DATABASE_URI": tmp_db,
+            "ENCRYPTION_KEY": "test-encryption-key-must-be-32-bytes-long-!!!!",
+            "SKIP_DOTENV_WRITE": "1",
+        })
+        with app.app_context():
+            # Setting defaults to enabled ("1") — write_file is not denied.
+            result = tools.execute_tool_call(
+                "write_file",
+                json.dumps({"path": "x.txt", "content": "hi"}),
+                context="chat",
+                output_dir="/nonexistent-write-target",
+            )
+        # Passes the lock check; failure (if any) is from the disk write itself,
+        # not from the "disabled" guard.
+        assert result["success"] is False
+        assert "disabled" not in result["result"]
+
+
 class TestToolProfileGating:
     """Tests for execute_tool_call() profile enforcement."""
 
