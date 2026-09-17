@@ -162,30 +162,39 @@ const ProjectPanel = {
 
         // Kick off propagation for every detected change event.
         btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Propagating ${events.length} change(s)…`;
-        let started = 0;
-        let skipped = 0;
+        const startedChangeIds = [];
+        const startFailures = [];
         for (const ev of events) {
+          if (!ev || !ev.id) continue;
           try {
             const res = await API.runPropagation(this._projectId, ev.id);
-            if (res && res.started !== false) started++;
-            else skipped++;
-          } catch (_) {
-            skipped++;
+            if (res && res.started !== false) startedChangeIds.push(ev.id);
+            else startFailures.push(`Change #${ev.id} did not start.`);
+          } catch (err) {
+            startFailures.push(`Change #${ev.id}: ${err.message || err}`);
           }
+        }
+
+        // Do not wait for a wave that the server rejected. Previously, a 400 or
+        // 409 was swallowed here and the button polled for up to ten minutes.
+        if (!startedChangeIds.length) {
+          alert(`Scan complete. Propagation did not start. ${startFailures.join(" ")}`);
+          return;
         }
 
         // Poll all change waves until every job is terminal (or timeout).
         const wavesDone = await this._waitForWaves(
           this._projectId,
-          events.filter((e) => e && e.id).map((e) => e.id),
+          startedChangeIds,
           {
             pollMs: 3000,
-            onProgress: (jobs) => this._showWorkingAgent(btn, jobs, started > 0),
+            onProgress: (jobs) => this._showWorkingAgent(btn, jobs, true),
           }
         );
 
         const stale = (report && report.stale_artifacts) ? report.stale_artifacts.length : 0;
-        let summary = `Found ${events.length} change event(s); propagation ${started} started, ${skipped} skipped.`;
+        let summary = `Found ${events.length} change event(s); propagation ${startedChangeIds.length} started.`;
+        if (startFailures.length) summary += ` ${startFailures.join(" ")}`;
         if (wavesDone) summary += " Propagation complete.";
         else summary += " Propagation still running — reopen the panel shortly.";
         if (stale) summary += ` ${stale} artifact(s) marked stale.`;
@@ -239,6 +248,7 @@ const ProjectPanel = {
         const jobs = relevant.flatMap((c) => c.jobs || []);
         if (opts.onProgress) opts.onProgress(jobs);
         if (!relevant.length) continue; // not claimed yet — keep polling
+        if (!jobs.length) return false; // successful starts always create jobs
         if (jobs.length && jobs.every((j) => terminal.includes(j.state))) {
           return true;
         }

@@ -74,12 +74,15 @@ def run_chat_turn(
     messages: list[dict],
     tools: Optional[list] = None,
     tool_choice: Optional[str] = None,
+    initial_tool_choice: Optional[dict] = None,
     max_iterations: int = 25,
     execute_tool_fn=None,
     output_dir: str = "",
     record_usage_fn: Optional[Callable[[dict], None]] = None,
     max_context_tokens: Optional[int] = None,
     max_output_tokens: Optional[int] = None,
+    request_timeout: Optional[float] = None,
+    request_extra_body: Optional[dict] = None,
 ) -> Iterator[dict]:
     """
     Run a single chat turn with tool-call loop, yielding structured events.
@@ -90,6 +93,9 @@ def run_chat_turn(
         messages: List of message dicts for the API (includes system prompt)
         tools: Optional list of tool definitions (restricted allowlist)
         tool_choice: Tool choice strategy ("auto", "none", or specific function)
+        initial_tool_choice: Tool choice applied only to the first model call.
+            Subsequent calls use ``tool_choice`` so a required initial write does
+            not force a redundant tool call after its result is returned.
         max_iterations: Maximum tool-call rounds before forcing termination
         execute_tool_fn: Function to execute tool calls (name, args, output_dir) -> result dict
         output_dir: Output directory for file operations
@@ -100,6 +106,10 @@ def run_chat_turn(
         max_output_tokens: When set, pass ``max_tokens`` on each API call to cap
             generated output (e.g. propagation diff rewrites). Providers that
             reject the parameter fall back to an uncapped call.
+        request_timeout: Maximum seconds to wait for each model request. This is
+            passed to the OpenAI client rather than the model provider.
+        request_extra_body: Provider-specific request fields passed through the
+            OpenAI client, such as an OpenRouter reasoning configuration.
 
     Yields:
         Dict events: token, tool_result, error, done, title
@@ -133,9 +143,16 @@ def run_chat_turn(
             }
             if tools:
                 create_kwargs["tools"] = tools
-                create_kwargs["tool_choice"] = tool_choice or "auto"
+                create_kwargs["tool_choice"] = (
+                    initial_tool_choice if iteration == 0 and initial_tool_choice
+                    else tool_choice or "auto"
+                )
             if max_output_tokens:
                 create_kwargs["max_tokens"] = max_output_tokens
+            if request_timeout is not None:
+                create_kwargs["timeout"] = request_timeout
+            if request_extra_body:
+                create_kwargs["extra_body"] = request_extra_body
 
             # Ask for usage metadata; some OpenAI-compatible backends reject the
             # parameter, so fall back to a plain request (estimates are used).

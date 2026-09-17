@@ -11,6 +11,7 @@ from propagation.agent import (
     normalize_rewrite,
     WaveOverlay,
     RewritePayload,
+    build_agent_prompt,
 )
 
 
@@ -56,6 +57,32 @@ def _rewrite(key, body):
     return f"# {key}\n\n## placeholder\n\n{body}\n"
 
 
+def test_agent_prompt_includes_change_details():
+    messages = build_agent_prompt(
+        "persona",
+        "upstream context",
+        {
+            "summary": "Add account sessions",
+            "changed_reqs": ["REQ-001"],
+            "diff": "+Session records are required.",
+        },
+        "# DB-MODEL\n",
+    )
+
+    assert "Add account sessions" in messages[1]["content"]
+    assert "REQ-001" in messages[1]["content"]
+    assert "+Session records are required." in messages[1]["content"]
+
+
+def test_placeholder_heading_can_be_replaced():
+    assessment = assess_rewrite(
+        "# DB-MODEL\n\n## placeholder\n",
+        "# DB-MODEL\n\n## Entities\n\nSession records.\n",
+    )
+
+    assert assessment.ok
+
+
 class TestDownstreamPromptOverlay:
     """C16 gate: QA-PLAN prompt contains the updated DB-MODEL text."""
 
@@ -65,7 +92,7 @@ class TestDownstreamPromptOverlay:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 pid, event = _setup_wave(app, tmp_db, tmp_dir)
 
-                client = FakeOpenAIClient()
+                client = FakeOpenAIClient(base_url="https://openrouter.ai/api/v1")
                 # DB-MODEL rewrite (first job), then closing text.
                 client.add_tool_calls_response([{
                     "name": "write_artifact",
@@ -99,6 +126,30 @@ class TestDownstreamPromptOverlay:
                 # The QA-PLAN prompt must contain the *updated* DB-MODEL text.
                 qa_prompt = next(p for p in payloads if p.artifact_key == "QA-PLAN").prompt
                 assert "Supports SQLite and MySQL now" in qa_prompt
+                assert all(
+                    call["kwargs"]["timeout"] == 180
+                    for call in client.get_calls()
+                )
+                assert all(
+                    call["kwargs"]["extra_body"] == {"reasoning": {"enabled": False}}
+                    for call in client.get_calls()
+                )
+                assert all(
+                    [tool["function"]["name"] for tool in call["tools"]] == ["write_artifact"]
+                    for call in client.get_calls()
+                )
+                calls = client.get_calls()
+                assert all(
+                    calls[index]["tool_choice"] == {
+                        "type": "function",
+                        "function": {"name": "write_artifact"},
+                    }
+                    for index in range(0, len(calls), 2)
+                )
+                assert all(
+                    calls[index]["tool_choice"] == "auto"
+                    for index in range(1, len(calls), 2)
+                )
 
 
 class TestShrinkGuard:

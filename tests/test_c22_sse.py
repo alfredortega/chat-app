@@ -203,6 +203,47 @@ class TestRunPropagationRoute:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def test_run_propagation_queues_jobs_until_the_wave_claims_them(self, tmp_db, monkeypatch):
+        """Only the active artifact is running; queued siblings must not mask it."""
+        app = _app(tmp_db)
+        tmp_dir = tempfile.mkdtemp()
+
+        class ThreadThatDoesNotRun:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr("routes.projects.threading.Thread", ThreadThatDoesNotRun)
+        try:
+            with app.app_context():
+                db_module.set_setting("allow_local_file_access", "1")
+                pid = db_module.create_folder("SDLC")["id"]
+                db_module.register_project_from_template(pid, "sdlc", tmp_dir)
+                db_module.create_artifact_trace(pid, "DB-MODEL", "REQ-014")
+                event = db_module.create_change_event(
+                    project_id=pid, source_key="BA-REQ",
+                    from_version=1, to_version=2, changed_reqs=["REQ-014"],
+                )
+                db_module.create_endpoint(
+                    "fake", "http://fase.openai.test/v1",
+                    api_key="k", default_model="m", is_default=True,
+                )
+
+            with app.test_client() as client:
+                response = client.post(
+                    f"/api/projects/{pid}/changes/{event['id']}/run-propagation"
+                )
+            assert response.status_code == 200
+
+            with app.app_context():
+                jobs = db_module.list_propagation_jobs(event["id"])
+            assert jobs
+            assert {job["state"] for job in jobs} == {"queued"}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def test_background_bookkeeping_uses_payload_attributes(self, tmp_db, monkeypatch):
         """Regression: the wave's error bookkeeping crashed with
         "RewritePayload object is not subscriptable" because it used dict-style
@@ -251,7 +292,7 @@ class TestRunPropagationRoute:
                 db_module.create_propagation_job(event["id"], "DB-MODEL", persona_id=None, depth=1)
                 db_module.create_propagation_job(event["id"], "UX-WIRE", persona_id=None, depth=1)
                 for job in db_module.list_propagation_jobs(event["id"]):
-                    db_module.update_propagation_job(job["id"], state="running")
+                    db_module.update_propagation_job(job["id"], state="queued")
 
                 from routes.projects import _run_wave_background
                 with app.test_request_context():

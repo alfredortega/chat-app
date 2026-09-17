@@ -37,6 +37,11 @@ PERSONA_CAP = 4_000
 # used to emit 100k+ tokens is bounded. Override with PROPAGATION_MAX_OUT_TOKENS.
 MAX_OUTPUT_TOKENS = int(os.getenv("PROPAGATION_MAX_OUT_TOKENS", "6000"))
 
+# A propagation request runs in a background thread, so a provider that accepts
+# a stream but never sends a response would otherwise leave its job running
+# forever. This is intentionally separate from normal interactive chat.
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("PROPAGATION_REQUEST_TIMEOUT", "180"))
+
 
 # ── Rewrite guards (pure, server-side) ─────────────────────────────────────────
 
@@ -51,7 +56,13 @@ class RewriteAssessment:
 
 
 def _headings(content: str) -> set[str]:
-    return {h.strip() for h in HEADING_PATTERN.findall(content)}
+    # Template placeholders are intentionally replaced when an artifact is
+    # first generated, so they are not durable document headings.
+    return {
+        heading.strip()
+        for heading in HEADING_PATTERN.findall(content)
+        if heading.strip().lower() != "## placeholder"
+    }
 
 
 def assess_rewrite(
@@ -251,8 +262,15 @@ def build_agent_prompt(
         "lines). The server will set front-matter (version, origin, derives_from) - "
         "do not invent your own version numbers."
     )
+    if len(_strip_front_matter(current_artifact)) <= 1_000:
+        instructions += (
+            " The current artifact is a small template placeholder: provide its "
+            "complete replacement in the write_artifact tool's 'content' parameter "
+            "instead of a diff."
+        )
 
     user_content = (
+        f"{change_section}\n\n---\n\n"
         f"{context}\n\n---\n\n"
         f"The article below is the CURRENT content of the artifact you are updating:\n\n"
         f"<CURRENT_ARTIFACT>\n{current_artifact}\n</CURRENT_ARTIFACT>\n\n"
@@ -372,7 +390,13 @@ def run_propagation_wave(
                 current,
             )
 
-            tools = build_tools("propagation")
+            # The complete current artifact and upstream context are already in
+            # the prompt. Offering discovery/question tools lets some providers
+            # ignore the required write and spend the whole tool loop reading.
+            tools = [
+                tool for tool in build_tools("propagation")
+                if tool["function"]["name"] == "write_artifact"
+            ]
             old_version = meta.get("version", 1)
             derives_from = meta.get("derives_from") or []
 
@@ -410,7 +434,10 @@ def run_propagation_wave(
                         return {
                             "success": True,
                             "display": "Captured rewrite in memory.",
-                            "result": "Artifact rewrite captured.",
+                            "result": (
+                                "Artifact rewrite captured. Reply only with DONE; "
+                                "do not call another tool."
+                            ),
                         }
                     if name == "read_artifact":
                         try:
@@ -430,15 +457,30 @@ def run_propagation_wave(
                 return handler
 
             handler = make_tool_handler()
+            # The configured OpenRouter DeepSeek model enables high-effort
+            # reasoning by default. Propagation only needs a compact artifact
+            # diff, and waiting for thousands of hidden reasoning tokens leaves
+            # the first job visibly stuck for minutes. Do not send this
+            # OpenRouter-specific field to other compatible endpoints.
+            openrouter_request = "openrouter.ai" in str(getattr(client, "base_url", ""))
             events = run_chat_turn(
                 client=client,
                 model_id=model_id,
                 messages=messages,
                 tools=tools,
+                # A propagation job is not useful unless it captures a rewrite.
+                # Require it on the first turn, then allow the model to finish
+                # normally after the tool result is supplied.
+                initial_tool_choice={
+                    "type": "function",
+                    "function": {"name": "write_artifact"},
+                },
                 max_iterations=max_iterations,
                 execute_tool_fn=handler,
                 output_dir=workspace_dir,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
+                request_timeout=REQUEST_TIMEOUT_SECONDS,
+                request_extra_body={"reasoning": {"enabled": False}} if openrouter_request else None,
             )
             for ev in events:
                 if ev.get("type") == "error":

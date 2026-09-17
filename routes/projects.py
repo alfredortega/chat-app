@@ -367,10 +367,11 @@ def run_propagation_route(project_id: int, change_id: int):
     if not model_id:
         return api_error("No default model configured — set a default model on the default endpoint.", 400)
 
-    # Mark jobs running so the UI stream shows them as in-progress and a second
-    # click cannot double-run the wave.
+    # Queue the wave before launching its thread so a second click cannot
+    # double-run it. The agent marks one job ``running`` at a time; marking all
+    # of them running here made the UI appear stuck on the first role.
     for job_id in active:
-        db.update_propagation_job(job_id, state="running", attempts=(jobs and jobs[0].get("attempts", 0)) or 0)
+        db.update_propagation_job(job_id, state="queued", attempts=(jobs and jobs[0].get("attempts", 0)) or 0)
 
     from flask import current_app
     app = current_app._get_current_object()
@@ -393,7 +394,7 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
 
     Executes in a dedicated app context (thread-safe session handling) so the
     SSE job stream observes job state changes. Writes ``proposed`` proposals;
-    on failure marks the running jobs ``failed`` so the UI stops spinning.
+    on failure marks queued/running jobs ``failed`` so the UI stops spinning.
     """
     def task():
         from app import get_client
@@ -407,12 +408,12 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
         ok_payloads = [p for p in payloads if p.status == "ok"]
         if ok_payloads:
             write_proposals(project_id, change_id, ok_payloads)
-        # Any job still "running" after the wave is a regenerator that failed to
-        # capture a rewrite; surface it rather than leaking an eternal spinner.
+        # Any queued/running job after the wave failed to capture a rewrite;
+        # surface it rather than leaking an eternal spinner.
         # Note: payloads are RewritePayload dataclasses (attribute access).
         by_key = {p.artifact_key: p for p in payloads}
         for job in db.list_propagation_jobs(change_id):
-            if job["state"] == "running":
+            if job["state"] in ("queued", "running"):
                 target = by_key.get(job["artifact_key"])
                 db.update_propagation_job(job["id"], state="failed",
                                           error=(target.errors[0] if target and target.errors
@@ -424,7 +425,7 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
         # Ensure the UI can never hang on a silently dead background job.
         def mark_failed():
             for job in db.list_propagation_jobs(change_id):
-                if job["state"] == "running":
+                if job["state"] in ("queued", "running"):
                     db.update_propagation_job(job["id"], state="failed", error=str(exc))
         try:
             db.run_with_session(app, mark_failed)

@@ -30,6 +30,21 @@ class TestChatService:
         content = "".join(e["content"] for e in token_events)
         assert content == "Hello! How can I help you?"
 
+    def test_request_extra_body_is_passed_to_provider(self):
+        client = FakeOpenAIClient()
+        client.add_text_response("Done")
+
+        list(run_chat_turn(
+            client=client,
+            model_id="test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            request_extra_body={"reasoning": {"enabled": False}},
+        ))
+
+        assert client.get_last_call()["kwargs"]["extra_body"] == {
+            "reasoning": {"enabled": False},
+        }
+
     def test_plain_text_response_non_streaming_tools(self):
         """Test plain text response with tools available but not used."""
         client = FakeOpenAIClient()
