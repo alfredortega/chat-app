@@ -366,6 +366,7 @@ def run_chat_turn(
                     "success": result["success"],
                     "display": result["display"],
                     "blocked_url": result.get("blocked_url"),
+                    "document": result.get("document"),
                 }
 
                 yield {"type": "tool_message", "tool_call_id": tool_call_id, "content": result["result"]}

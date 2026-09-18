@@ -60,6 +60,8 @@ const App = {
     Chat.init(this.messagesArea);
     SaveFiles.init();
     FolderBrowser.init();
+    if (typeof MarkdownDocuments !== "undefined") MarkdownDocuments.init();
+    if (typeof ImportMarkdown !== "undefined") ImportMarkdown.init();
 
     // Apply saved theme early
     this._applyTheme(localStorage.getItem("theme") || "dark");
@@ -107,10 +109,10 @@ const App = {
         if (this.activeConvId) FolderBrowser.open(this.activeConvId);
       });
 
-    // Import markdown as context
+    // Import markdown as context (native picker fallback reachable from the
+    // server-side output-folder browser opened by ImportMarkdown.init()).
     this.mdContextInput = document.getElementById("mdContextInput");
-    document.getElementById("btnImportMd")
-      .addEventListener("click", () => this.mdContextInput.click());
+    this.mdContextInput.addEventListener("change", () => this._importMarkdownContext());
     this.mdContextInput.addEventListener("change", () => this._importMarkdownContext());
 
     // Output dir button — opens the per-conversation output dir modal
@@ -1116,6 +1118,9 @@ const App = {
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
               Chat.appendToolNotification(event.success, event.display, event.blocked_url);
               break;
+            case "document_created":
+              MarkdownDocuments.refreshList();
+              break;
             case "title":
               if (event.conv_id === this.activeConvId) {
                 this.chatTitleDisplay.textContent = event.title;
@@ -1238,6 +1243,8 @@ const App = {
             case "tool_result":
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
               Chat.appendToolNotification(event.success, event.display, event.blocked_url); break;
+            case "document_created":
+              MarkdownDocuments.refreshList(); break;
             case "done":
               if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
               this._refreshTokenCount(); break;
@@ -1341,6 +1348,8 @@ const App = {
               case "tool_result":
                 if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
                 Chat.appendToolNotification(event.success, event.display, event.blocked_url); break;
+              case "document_created":
+                MarkdownDocuments.refreshList(); break;
               case "done":
                 if (streamBubble) { streamBubble.finalise(); streamBubble = null; }
                 Conversations.bumpToTop(this.activeConvId);

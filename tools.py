@@ -790,11 +790,39 @@ def _write_file(args: dict, output_dir: str = None) -> dict:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
-        return {"success": True, "result": f"File written to: {path}",
-                "display": f"✅ File saved: `{path}`"}
+        result = {"success": True, "result": f"File written to: {path}",
+                  "display": f"✅ File saved: `{path}`"}
+        # Attach document metadata for Markdown writes so the frontend can
+        # refresh its document panel (model-created file integration).
+        if path.lower().endswith((".md", ".markdown")):
+            result["document"] = _output_document_meta(path, content, effective_dir)
+        return result
     except OSError as exc:
         return {"success": False, "result": f"Failed to write file: {exc}",
                 "display": f"❌ File write failed: {exc}"}
+
+
+def _output_document_meta(path: str, content: str, effective_dir: str) -> dict:
+    """Build document metadata ({id, name, kind}) for a freshly written file.
+
+    The id is relative to the effective output directory so identifiers stay
+    opaque and server-validated.
+    """
+    import hashlib
+    name = os.path.basename(path)
+    try:
+        root = os.path.realpath(effective_dir)
+        real = os.path.realpath(path)
+        rel = os.path.relpath(real, root).replace(os.sep, "/")
+    except Exception:
+        rel = name
+    return {
+        "id": f"output:{rel}",
+        "name": name,
+        "kind": "output",
+        "size_bytes": len(content.encode("utf-8")),
+        "content_hash": "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
 
 
 # ── read_named_file ───────────────────────────────────────────────────────────

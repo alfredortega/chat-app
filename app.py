@@ -39,6 +39,20 @@ from file_handler import (
     build_linked_folder_context,
     scan_linked_folder, WARN_THRESHOLD,
 )
+from documents import (
+    DocumentError,
+    list_documents as list_documents_service,
+    read_document as read_document_service,
+    update_document as update_document_service,
+    rename_document as rename_document_service,
+    effective_output_dir,
+    resolve_output_path_for,
+    is_markdown_name,
+    MAX_EDITABLE_BYTES,
+)
+
+# Headroom above the editable-content ceiling for the JSON wrapper + hash.
+MAX_DOC_REQUEST_BYTES = MAX_EDITABLE_BYTES + 64 * 1024
 
 # Tool results (read_file, fetch_webpage, run_python, etc.) can be enormous. The
 # full result is persisted in the conversation history for UI/preview, but only
@@ -577,6 +591,10 @@ def chat(conv_id):
                 elif event["type"] == "tool_result":
                     # The tool was executed by chat_service, we just yield the result
                     yield sse_event(event)
+                    # After a successful Markdown write the frontend refreshes
+                    # its document panel.
+                    if event.get("document"):
+                        yield sse_event({"type": "document_created", "document": event["document"]})
 
                 elif event["type"] == "tool_message":
                     # Persist tool result message
@@ -981,6 +999,226 @@ def delete_file(conv_id, file_id):
 
     db.delete_conv_file(file_id)
     return jsonify({"ok": True})
+
+
+# ── Markdown documents (unified output + upload backends) ────────────────────
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/documents", methods=["GET"])
+def list_documents_route(conv_id):
+    """List Markdown documents available to the conversation."""
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        return jsonify({"documents": list_documents_service(conv_id)})
+    except DocumentError as exc:
+        return jsonify(exc.payload), exc.status
+
+
+def _valid_document_id(document_id: str) -> bool:
+    return bool(document_id) and (document_id.startswith("output:") or document_id.startswith("upload:"))
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/documents/<path:document_id>", methods=["GET"])
+def read_document_route(conv_id, document_id):
+    """Read one Markdown document (raw content; rendering happens client-side)."""
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Not found"}), 404
+    if not _valid_document_id(document_id):
+        return jsonify({"error": "invalid_document_id", "message": "Malformed document identifier."}), 400
+    try:
+        return jsonify(read_document_service(conv_id, document_id))
+    except DocumentError as exc:
+        return jsonify(exc.payload), exc.status
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/documents/<path:document_id>", methods=["PUT"])
+def update_document_route(conv_id, document_id):
+    """Save a document with hash-based optimistic concurrency + atomic replace."""
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Not found"}), 404
+    if not _valid_document_id(document_id):
+        return jsonify({"error": "invalid_document_id", "message": "Malformed document identifier."}), 400
+
+    if request.content_length is not None and request.content_length > MAX_DOC_REQUEST_BYTES:
+        return jsonify({
+            "error": "document_too_large",
+            "message": f"Document exceeds the {MAX_EDITABLE_BYTES // (1024 * 1024)} MB edit limit.",
+        }), 413
+
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    expected_hash = data.get("expected_hash")
+    if not isinstance(content, str):
+        return jsonify({"error": "invalid_content", "message": "Document content must be text."}), 400
+    try:
+        result = update_document_service(conv_id, document_id, content, expected_hash)
+        return jsonify(result), 200
+    except DocumentError as exc:
+        return jsonify(exc.payload), exc.status
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/documents/<path:document_id>/rename", methods=["POST"])
+def rename_document_route(conv_id, document_id):
+    """Rename a Markdown document (jail-checked on the server)."""
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Not found"}), 404
+    if not _valid_document_id(document_id):
+        return jsonify({"error": "invalid_document_id", "message": "Malformed document identifier."}), 400
+    data = request.get_json(silent=True) or {}
+    try:
+        result = rename_document_service(conv_id, document_id, data.get("name"))
+        return jsonify(result), 200
+    except DocumentError as exc:
+        return jsonify(exc.payload), exc.status
+
+
+# ── Import Markdown from the output folder ───────────────────────────────────
+
+IMPORT_EXTS = {".md", ".markdown", ".txt"}
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/import-browse", methods=["GET"])
+def import_browse(conv_id):
+    """Browse the conversation's effective output directory (jail-scoped).
+
+    ``?path`` is a relative path inside the output directory. Only folders and
+    Markdown/txt files are listed; symlinks resolving outside the root are
+    skipped. The OS file picker cannot start in a chosen folder, so this
+    server-side browser gives the Import Markdown action its starting point.
+    """
+    conv = db.get_conversation(conv_id)
+    if not conv:
+        return jsonify({"error": "Not found"}), 404
+    output_dir = effective_output_dir(conv)
+    if not output_dir:
+        return jsonify({"error": "no_output_dir",
+                        "message": "No output folder is configured for this conversation."}), 400
+
+    rel = (request.args.get("path") or "").strip()
+    if rel:
+        current_dir = resolve_output_path_for(conv, rel)
+    else:
+        current_dir = os.path.realpath(output_dir)
+    if current_dir is None:
+        return jsonify({"error": "invalid_path", "message": "That path is not allowed."}), 400
+    if not os.path.isdir(current_dir):
+        return jsonify({"error": "invalid_path", "message": "Not a directory."}), 400
+
+    root = os.path.realpath(output_dir)
+    current_rel = os.path.relpath(current_dir, root).replace("\\", "/")
+    if current_rel == ".":
+        current_rel = ""
+
+    entries = []
+    try:
+        with os.scandir(current_dir) as it:
+            scan = sorted(it, key=lambda e: (not e.is_dir(), e.name.lower()))
+    except PermissionError:
+        return jsonify({"error": "permission_denied", "message": "Permission denied."}), 403
+
+    for entry in scan:
+        if entry.name.startswith("."):
+            continue
+        real = os.path.realpath(entry.path)
+        if os.path.commonpath([root, real]) != root:
+            continue  # symlink escaping the output folder
+        child_rel = (current_rel + "/" + entry.name) if current_rel else entry.name
+        if entry.is_dir():
+            entries.append({
+                "name": entry.name, "is_dir": True, "ext": "", "size_bytes": 0,
+                "rel_path": child_rel,
+            })
+        elif entry.is_file() and os.path.splitext(entry.name)[1].lower() in IMPORT_EXTS:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                size = 0
+            entries.append({
+                "name": entry.name, "is_dir": False,
+                "ext": os.path.splitext(entry.name)[1].lower(),
+                "size_bytes": size, "rel_path": child_rel,
+            })
+
+    up = None
+    if current_rel:
+        parent = os.path.dirname(current_rel)
+        up = "" if not parent else parent
+
+    return jsonify({
+        "output_dir": output_dir,
+        "current": current_rel,
+        "up": up,
+        "entries": entries,
+    })
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/import-from-output", methods=["POST"])
+def import_from_output(conv_id):
+    """Copy a Markdown file from the output folder into the conversation and
+    register it as an upload so it shows as context and in the doc panel."""
+    conv = db.get_conversation(conv_id)
+    if not conv:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    rel = (data.get("path") or "").strip()
+    if not rel:
+        return jsonify({"error": "invalid_path", "message": "A file path is required."}), 400
+
+    output_dir = effective_output_dir(conv)
+    if not output_dir:
+        return jsonify({"error": "no_output_dir",
+                        "message": "No output folder is configured for this conversation."}), 400
+    abs_path = resolve_output_path_for(conv, rel)
+    if abs_path is None:
+        return jsonify({"error": "invalid_path", "message": "That path is not allowed."}), 400
+    if not os.path.isfile(abs_path):
+        return jsonify({"error": "not_found", "message": "File not found."}), 404
+
+    base_name = os.path.basename(abs_path)
+    if not is_markdown_name(base_name) and os.path.splitext(base_name)[1].lower() != ".txt":
+        return jsonify({"error": "invalid_file",
+                        "message": "Only Markdown or text files can be imported."}), 415
+
+    upload_dir = ensure_upload_dir(conv_id)
+    ext = os.path.splitext(base_name)[1].lower()
+    disk_name = f"{uuid.uuid4().hex}{ext}"
+    disk_path = os.path.join(upload_dir, disk_name)
+    try:
+        shutil.copyfile(abs_path, disk_path)
+    except OSError as exc:
+        return jsonify({"error": "import_failed", "message": f"Could not read the file: {exc}"}), 500
+
+    size_bytes = os.path.getsize(disk_path)
+    text, truncated = extract_text(disk_path, base_name)
+    record = db.add_conv_file(
+        conversation_id=conv_id,
+        original_name=base_name,
+        disk_path=disk_path,
+        size_bytes=size_bytes,
+        char_count=len(text),
+        snippet=text[:500],
+    )
+
+    payload = {
+        **record,
+        "success": True,
+        "truncated": truncated,
+        "warn_large": len(text) > WARN_THRESHOLD,
+    }
+    if is_markdown_name(base_name):
+        payload["document"] = {
+            "id": f"upload:{record['id']}",
+            "name": base_name,
+            "kind": "upload",
+            "size_bytes": size_bytes,
+            "content_hash": db.compute_content_hash(_raw_markdown(disk_path)),
+        }
+    return jsonify(payload), 201
+
+
+def _raw_markdown(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
 
 
 # ── Folder browser ─────────────────────────────────────────────────────────────
@@ -1409,7 +1647,7 @@ def write_file_direct():
                 fh.write(content)
             size_bytes = os.path.getsize(disk_path)
             text, _ = extract_text(disk_path, base_name)
-            db.add_conv_file(
+            record = db.add_conv_file(
                 conversation_id=conv_id,
                 original_name=base_name,
                 disk_path=disk_path,
@@ -1417,11 +1655,20 @@ def write_file_direct():
                 char_count=len(text),
                 snippet=text[:500],
             )
-            return jsonify({
+            payload = {
                 "success": True,
                 "display": f"✅ Saved to conversation files: `{base_name}`",
                 "result": f"File saved to conversation uploads: {disk_path}",
-            })
+            }
+            if base_name.lower().endswith((".md", ".markdown")):
+                payload["document"] = {
+                    "id": f"upload:{record['id']}",
+                    "name": base_name,
+                    "kind": "upload",
+                    "size_bytes": size_bytes,
+                    "content_hash": db.compute_content_hash(content),
+                }
+            return jsonify(payload)
         except Exception as exc:
             return jsonify({"success": False, "display": f"❌ Failed to save file: {exc}",
                             "result": f"Failed to save file: {exc}"}), 500
@@ -1540,6 +1787,15 @@ def _build_system_prompt(
         context_section, _scope_meta = build_conversation_context(conv, conv_id)
     if context_section:
         base_system += "\n\n" + context_section
+
+    # Token-efficient model integration: remind the model that a document was
+    # recently edited without re-injecting its full contents.
+    try:
+        recent_note = db.get_recent_document_edit_note(conv_id)
+    except Exception:
+        recent_note = ""
+    if recent_note:
+        base_system += "\n\n" + recent_note
 
     return base_system, output_dir
 

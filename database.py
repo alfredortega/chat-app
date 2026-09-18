@@ -1261,6 +1261,81 @@ def delete_conv_file(file_id: int):
         db.session.commit()
 
 
+def update_conv_file(
+    file_id: int,
+    size_bytes: int = None,
+    char_count: int = None,
+    snippet: str = None,
+    original_name: str = None,
+) -> dict | None:
+    """Update an existing conversation-upload record (used by editor saves so
+    editing a generated Markdown file never creates a duplicate upload row)."""
+    cf = db.session.get(ConvFile, file_id)
+    if not cf:
+        return None
+    if size_bytes is not None:
+        cf.size_bytes = int(size_bytes)
+    if char_count is not None:
+        cf.char_count = int(char_count)
+    if snippet is not None:
+        cf.snippet = snippet
+    if original_name is not None:
+        cf.original_name = original_name
+    db.session.commit()
+    return cf.to_dict()
+
+
+# ── Recent document-edit marker (token-efficient model integration) ──────────
+
+RECENT_EDIT_TTL_SECONDS = 600
+
+
+def mark_recent_document_edit(conv_id: int, name: str, kind: str) -> None:
+    """Remember that the user just edited ``name`` for this conversation so the
+    next context build can add a short note without re-injecting the file."""
+    import time
+    row = db.session.get(Setting, f"doc_edit_{conv_id}")
+    payload = {
+        "name": name,
+        "kind": kind,
+        "ts": int(time.time()),
+    }
+    if row:
+        row.value = json.dumps(payload)
+    else:
+        db.session.add(Setting(key=f"doc_edit_{conv_id}", value=json.dumps(payload)))
+    db.session.commit()
+
+
+def get_recent_document_edit_note(conv_id: int) -> str:
+    """
+    Return a one-line context note when the user recently edited a document in
+    this conversation; empty otherwise. The note tells the model how to pull the
+    current contents without paying for the whole file on every prompt.
+    """
+    import time
+    try:
+        row = db.session.get(Setting, f"doc_edit_{conv_id}")
+        if not row or not row.value:
+            return ""
+        payload = json.loads(row.value)
+        name = payload.get("name") or ""
+        kind = payload.get("kind") or ""
+        ts = payload.get("ts") or 0
+    except Exception:
+        return ""
+    if not name or (time.time() - ts) > RECENT_EDIT_TTL_SECONDS:
+        return ""
+    if kind == "upload":
+        tool_hint = "Use the read_named_file tool if you need its complete current contents."
+    else:
+        tool_hint = "Use the read_file tool if you need its complete current contents."
+    return (
+        f"The user edited {name} since the previous turn. "
+        f"{tool_hint} See the file index above for its size, hash and preview."
+    )
+
+
 def delete_last_assistant_turn(conversation_id: int):
     messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.id.asc()).all()
     if not messages:

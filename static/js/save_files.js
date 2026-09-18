@@ -130,6 +130,11 @@ const SaveFiles = {
       if (convId) { try { await Files.load(convId); } catch (_) {} }
       else { try { await Files.load(App.activeConvId); } catch (_) {} }
     }
+
+    // Saved Markdown files also surface in the unified document panel.
+    if (typeof MarkdownDocuments !== "undefined") {
+      try { await MarkdownDocuments.refreshList(); } catch (_) {}
+    }
   },
 };
 

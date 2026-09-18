@@ -291,6 +291,67 @@ const API = {
     return res.json();
   },
 
+  // ── Markdown documents (unified output + upload backends) ────────────────
+
+  async listDocuments(convId) {
+    const res = await fetch(`/api/conversations/${convId}/documents`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // { documents: [...] }
+  },
+
+  async getDocument(convId, docId) {
+    const res = await fetch(`/api/conversations/${convId}/documents/${encodeURIComponent(docId)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  /**
+   * Save a document. Resolves to { conflict: true, data } on a 409 so the
+   * editor can keep the user's content and surface the conflict; throws on
+   * any other error.
+   */
+  async saveDocument(convId, docId, content, expectedHash) {
+    const res = await fetch(`/api/conversations/${convId}/documents/${encodeURIComponent(docId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, expected_hash: expectedHash }),
+    });
+    if (res.status === 409) return { conflict: true, data: await res.json() };
+    if (!res.ok) throw new Error(await res.text());
+    return { conflict: false, data: await res.json() };
+  },
+
+  async renameDocument(convId, docId, name) {
+    const res = await fetch(`/api/conversations/${convId}/documents/${encodeURIComponent(docId)}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  // ── Import Markdown from the output folder ─────────────────────────────
+
+  /** Browse inside the conversation's effective output directory (rel path). */
+  async browseOutputImport(convId, rel) {
+    const qs = rel ? `?path=${encodeURIComponent(rel)}` : "";
+    const res = await fetch(`/api/conversations/${convId}/import-browse${qs}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // { output_dir, current, up, entries }
+  },
+
+  /** Copy an output-dir Markdown file into the conversation as an upload. */
+  async importMarkdownFromOutput(convId, rel) {
+    const res = await fetch(`/api/conversations/${convId}/import-from-output`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: rel }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); // ConvFile record + optional document meta
+  },
+
   // ── Folder browser ────────────────────────────────────────────────────────
 
   async browse(path) {

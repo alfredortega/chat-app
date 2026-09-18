@@ -962,3 +962,182 @@ body {
   border-radius: 4px;
   padding: 1px 5px;
 }
+
+/* ── Markdown documents panel & editor (M1/M2) ──────────────────────────── */
+
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+}
+
+.doc-row:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.doc-row .doc-icon { font-size: 1.1rem; }
+
+.doc-row .doc-name {
+  font-weight: 600;
+  word-break: break-word;
+  cursor: pointer;
+}
+
+.doc-row .doc-meta {
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color, #9aa3ad);
+  white-space: nowrap;
+}
+
+.doc-managed-badge {
+  font-size: 0.62rem;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: rgba(220, 53, 69, 0.18);
+  color: #e35d6a;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.doc-row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+/* Split source / rendered preview panel */
+.doc-editor-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+}
+
+.doc-editor-source,
+.doc-editor-preview {
+  min-height: 0;
+  overflow: auto;
+  padding: 0.9rem;
+  font-size: 0.85rem;
+}
+
+.doc-editor-source {
+  border: 0;
+  border-right: 1px solid var(--bs-border-color, #444);
+  resize: none;
+  background: transparent;
+  color: var(--bs-body-color, #dee2e6);
+  font-family: var(--bs-font-monospace, monospace);
+  line-height: 1.5;
+  outline: none;
+}
+
+.doc-editor-preview {
+  background: transparent;
+  overflow-wrap: anywhere;
+}
+
+.doc-editor-preview img { max-width: 100%; }
+
+.doc-editor-preview a { color: #4a9eff; }
+
+@media (max-width: 768px) {
+  .doc-editor-split { grid-template-columns: 1fr; }
+  .doc-editor-source { border-right: 0; border-bottom: 1px solid var(--bs-border-color, #444); }
+}
+
+/* ── Markdown editor: EasyMDE + fullscreen + preview-only (M2 polish) ───── */
+
+.doc-editor-split.preview-only {
+  grid-template-columns: 1fr;
+}
+
+/* EasyMDE / CodeMirror fills the source column of the split */
+.doc-editor-split .EasyMDEContainer {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 0;
+  border-right: 1px solid var(--bs-border-color, #444);
+}
+
+.doc-editor-split .EasyMDEContainer .editor-toolbar {
+  flex-shrink: 0;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
+.doc-editor-split .EasyMDEContainer .CodeMirror {
+  flex: 1;
+  height: auto;
+  min-height: 200px;
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* Document editor modal sizing (full-screen toggle must win over the
+   92vh default below, so no inline height is used on the content). */
+#documentEditorModal .modal-content {
+  height: 92vh;
+}
+
+@media (max-height: 720px) {
+  #documentEditorModal .modal-content {
+    height: 100%;
+  }
+}
+
+#documentEditorModal.modal-fullscreen .modal-dialog {
+  width: 100vw;
+  max-width: none;
+  height: 100%;
+  margin: 0;
+}
+
+#documentEditorModal.modal-fullscreen .modal-content {
+  height: 100vh;
+  height: 100dvh;
+}
+
+#documentEditorModal.modal-fullscreen .doc-editor-split {
+  grid-template-columns: 1fr 1fr;
+}
+
+#documentEditorModal.modal-fullscreen .doc-editor-split.preview-only {
+  grid-template-columns: 1fr;
+}
+
+/* EasyMDE dark-theme overrides */
+[data-bs-theme="dark"] .EasyMDEContainer,
+[data-bs-theme="dark"] .EasyMDEContainer .CodeMirror,
+[data-bs-theme="dark"] .EasyMDEContainer .CodeMirror-scroll,
+[data-bs-theme="dark"] .EasyMDEContainer .editor-toolbar,
+[data-bs-theme="dark"] .EasyMDEContainer .editor-statusbar {
+  background-color: var(--bs-body-bg, #212529);
+  color: var(--bs-body-color, #dee2e6);
+}
+
+[data-bs-theme="dark"] .EasyMDEContainer .CodeMirror { color: var(--bs-body-color, #dee2e6); }
+[data-bs-theme="dark"] .EasyMDEContainer .CodeMirror-cursor { border-left-color: #dde; }
+[data-bs-theme="dark"] .EasyMDEContainer .CodeMirror-selected { background: rgba(13, 110, 253, 0.35); }
+[data-bs-theme="dark"] .EasyMDEContainer .editor-toolbar button,
+[data-bs-theme="dark"] .EasyMDEContainer .editor-statusbar {
+  color: var(--bs-body-color, #dee2e6);
+}
+[data-bs-theme="dark"] .EasyMDEContainer .editor-toolbar button:hover,
+[data-bs-theme="dark"] .EasyMDEContainer .editor-toolbar button.active {
+  background: rgba(127, 127, 127, 0.2);
+  color: #fff;
+}
+
+@media (max-width: 768px) {
+  .doc-editor-split .EasyMDEContainer {
+    border-right: 0;
+    border-bottom: 1px solid var(--bs-border-color, #444);
+  }
+}
