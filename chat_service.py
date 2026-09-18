@@ -17,7 +17,8 @@ from tokens import estimate_messages_tokens, estimate_tokens
 # Tool results fed back to the model on the next tool-call iteration are capped
 # so one oversized result cannot blow the whole context window. The full result
 # is still persisted to the conversation history for UI/preview.
-TOOL_RESULT_CAP = 32_000
+TOOL_RESULT_CAP = 16_000
+MAX_IDENTICAL_TOOL_CALLS = 2
 
 
 def _cap_tool_content(content: str) -> str:
@@ -28,6 +29,78 @@ def _cap_tool_content(content: str) -> str:
             "full result kept in conversation history]"
         )
     return content
+
+
+def _message_text(message: dict) -> str:
+    """Return the useful text from a message for a compact history summary."""
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    return str(content)
+
+
+def compact_api_history(
+    messages: list[dict],
+    max_tokens: Optional[int],
+    keep_recent: int = 12,
+) -> list[dict]:
+    """Bound request history without deleting the stored conversation."""
+    if not max_tokens or estimate_messages_tokens(messages) <= max_tokens:
+        return list(messages)
+    if len(messages) <= keep_recent + 2:
+        return list(messages)
+
+    system = messages[0] if messages and messages[0].get("role") == "system" else None
+    first_user_index = next(
+        (i for i, message in enumerate(messages) if message.get("role") == "user"),
+        None,
+    )
+    if first_user_index is None:
+        return list(messages)
+
+    first_user = messages[first_user_index]
+    tail_start = max(first_user_index + 1, len(messages) - keep_recent)
+    # Keep assistant tool calls together with their following tool results.
+    while tail_start > first_user_index + 1 and messages[tail_start].get("role") == "tool":
+        tail_start -= 1
+    older = messages[first_user_index + 1:tail_start]
+    if not older:
+        return list(messages)
+
+    summary_lines = []
+    for message in older:
+        text = " ".join(_message_text(message).split())
+        if not text and message.get("tool_calls"):
+            names = [
+                (call.get("function") or {}).get("name", "tool")
+                for call in message["tool_calls"]
+            ]
+            text = "Called " + ", ".join(names)
+        if text:
+            summary_lines.append(f"{message.get('role', 'message')}: {text[:600]}")
+
+    summary = {
+        "role": "user",
+        "content": (
+            "[Earlier conversation summary; details omitted to reduce context size]\n"
+            + "\n".join(summary_lines[-20:])
+        ),
+    }
+    compacted = ([system] if system else []) + [first_user, summary] + messages[tail_start:]
+
+    # Trim the synthetic summary before dropping any recent context.
+    while estimate_messages_tokens(compacted) > max_tokens and len(compacted) > 3:
+        if compacted[2] is summary:
+            new_length = max(200, len(summary["content"]) // 2)
+            if new_length == len(summary["content"]):
+                compacted.pop(2)
+            else:
+                summary["content"] = summary["content"][:new_length]
+        else:
+            compacted.pop(2)
+    return compacted
 
 
 def _build_usage_record(
@@ -116,6 +189,8 @@ def run_chat_turn(
     """
     iteration = 0
     history = list(messages)
+    last_tool_signature = None
+    identical_tool_calls = 0
 
     while True:
         if iteration >= max_iterations:
@@ -241,6 +316,22 @@ def run_chat_turn(
                 }
                 for v in tool_calls_accum.values()
             ]
+
+            signature = json.dumps(
+                [(tc["function"]["name"], tc["function"]["arguments"]) for tc in tc_list],
+                sort_keys=True,
+            )
+            if signature == last_tool_signature:
+                identical_tool_calls += 1
+            else:
+                last_tool_signature = signature
+                identical_tool_calls = 1
+            if identical_tool_calls > MAX_IDENTICAL_TOOL_CALLS:
+                yield {
+                    "type": "error",
+                    "message": "Stopped repeated identical tool calls to limit token usage.",
+                }
+                return
 
             # Feed the assistant's tool-call message back into the conversation
             # so the model sees it (and the tool results below) on the next

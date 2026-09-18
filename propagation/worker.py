@@ -28,6 +28,7 @@ TERMINAL_STATES = (
     "needs_input",
     "cancelled",
     "completed",
+    "rejected",
 )
 
 MAX_ATTEMPTS = 3

@@ -36,7 +36,7 @@ def estimate_tokens(text: str = "") -> int:
     enc = _get_encoder()
     if enc is not None:
         try:
-            return len(enc.encode(text))
+            return max(1, len(enc.encode(text)))
         except Exception:
             pass
     return max(1, len(text) // 4)

@@ -214,6 +214,28 @@ class TestChatService:
         done_events = [e for e in events if e["type"] == "done"]
         assert len(done_events) == 0
 
+    def test_repeated_identical_tool_calls_are_stopped(self):
+        client = FakeOpenAIClient()
+        for _ in range(4):
+            client.add_tool_calls_response([
+                {"id": "same", "name": "read_file", "arguments": '{"path":"a.txt"}'},
+            ])
+
+        def execute_tool(fn_name, fn_args, output_dir):
+            return {"success": True, "display": "Read", "result": "same result", "blocked_url": None}
+
+        events = list(run_chat_turn(
+            client=client,
+            model_id="test-model",
+            messages=[{"role": "user", "content": "Read it"}],
+            tools=[{"type": "function", "function": {"name": "read_file"}}],
+            tool_choice="auto",
+            execute_tool_fn=execute_tool,
+        ))
+
+        assert any(e["type"] == "error" and "repeated" in e["message"] for e in events)
+        assert len(client.get_calls()) == 3
+
     def test_error_event_on_exception(self):
         """Test that exceptions from the client yield error events."""
         client = FakeOpenAIClient()

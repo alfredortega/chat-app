@@ -76,7 +76,10 @@ def apply_unified_diff(content: str, diff_text: str) -> str | None:
             continue
 
         anchor_text = _norm(anchor[1:])
-        search_end = min(len(old_lines), pos + FUZZ_LIMIT)
+        # A large artifact's first change can be far beyond the first 250
+        # lines. Include the model's claimed hunk location in the fuzzy window
+        # instead of rejecting an otherwise valid patch before reaching it.
+        search_end = min(len(old_lines), max(pos + FUZZ_LIMIT, claimed_start + FUZZ_LIMIT))
         match = None
         for i in range(pos, search_end):
             if _norm(old_lines[i]) == anchor_text:

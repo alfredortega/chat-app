@@ -12,6 +12,7 @@ from propagation.agent import (
     WaveOverlay,
     RewritePayload,
     build_agent_prompt,
+    CURRENT_ARTIFACT_CAP,
 )
 
 
@@ -74,6 +75,14 @@ def test_agent_prompt_includes_change_details():
     assert "+Session records are required." in messages[1]["content"]
 
 
+def test_agent_prompt_directs_agent_to_read_complete_artifact_for_patch_context():
+    current = "start\n" + ("x" * (CURRENT_ARTIFACT_CAP + 1)) + "\nunique final line\n"
+    messages = build_agent_prompt("persona", "", {}, current, "DB-MODEL")
+
+    assert "Call read_artifact for 'DB-MODEL'" in messages[1]["content"]
+    assert current not in messages[1]["content"]
+
+
 def test_placeholder_heading_can_be_replaced():
     assessment = assess_rewrite(
         "# DB-MODEL\n\n## placeholder\n",
@@ -81,6 +90,44 @@ def test_placeholder_heading_can_be_replaced():
     )
 
     assert assessment.ok
+
+
+def test_agent_retries_when_model_replies_with_prose_after_read(tmp_db):
+    """A prose response after the required read must not leave the job stale."""
+    app = _make_app(tmp_db)
+    with app.app_context():
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pid, event = _setup_wave(app, tmp_db, tmp_dir)
+            client = FakeOpenAIClient()
+            client.add_tool_calls_response([{
+                "name": "read_artifact",
+                "arguments": json.dumps({"artifact_key": "DB-MODEL"}),
+            }])
+            client.add_text_response("I reviewed the artifact and will update it.")
+            client.add_tool_calls_response([{
+                "name": "write_artifact",
+                "arguments": json.dumps({
+                    "artifact_key": "DB-MODEL",
+                    "content": _rewrite("DB-MODEL", "## Entities\nUpdated body."),
+                }),
+            }])
+            client.add_text_response("Done.")
+            for key in ["SEC-RISK", "UX-WIRE", "QA-PLAN", "PM-PLAN"]:
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": key,
+                        "content": _rewrite(key, "## Section\nUpdated body."),
+                    }),
+                }])
+                client.add_text_response("Done.")
+
+            payloads = run_propagation_wave(app, pid, event["id"], client)
+            db_model = next(p for p in payloads if p.artifact_key == "DB-MODEL")
+            assert db_model.status == "ok"
+            assert db_model.content != ""
+            assert all(job["state"] == "completed"
+                       for job in db_module.list_propagation_jobs(event["id"]))
 
 
 class TestDownstreamPromptOverlay:
@@ -135,14 +182,14 @@ class TestDownstreamPromptOverlay:
                     for call in client.get_calls()
                 )
                 assert all(
-                    [tool["function"]["name"] for tool in call["tools"]] == ["write_artifact"]
+                    [tool["function"]["name"] for tool in call["tools"]] == ["read_artifact", "write_artifact", "ask_question"]
                     for call in client.get_calls()
                 )
                 calls = client.get_calls()
                 assert all(
                     calls[index]["tool_choice"] == {
                         "type": "function",
-                        "function": {"name": "write_artifact"},
+                        "function": {"name": "read_artifact"},
                     }
                     for index in range(0, len(calls), 2)
                 )
@@ -416,6 +463,79 @@ class TestDiffOutputWave:
                 db_model = next(p for p in payloads if p.artifact_key == "DB-MODEL")
                 assert db_model.status == "rejected"
                 assert any("diff" in e.lower() for e in db_model.errors)
+                job = next(
+                    job for job in db_module.list_propagation_jobs(event["id"])
+                    if job["artifact_key"] == "DB-MODEL"
+                )
+                assert job["state"] == "failed"
+                assert db_module.get_artifact(pid, "DB-MODEL")["status"] == "stale"
+
+    def test_retry_skips_already_applied_artifacts(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                db_model_job = next(
+                    job for job in db_module.list_propagation_jobs(event["id"])
+                    if job["artifact_key"] == "DB-MODEL"
+                )
+                db_module.update_propagation_job(db_model_job["id"], state="applied")
+
+                client = _scripted_client([
+                    {
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## Updated\nRetry content."),
+                        }),
+                    }
+                    for key in ["SEC-RISK", "UX-WIRE", "QA-PLAN", "PM-PLAN"]
+                ])
+                payloads = run_propagation_wave(app, pid, event["id"], client)
+
+                assert "DB-MODEL" not in {payload.artifact_key for payload in payloads}
+                assert {payload.artifact_key for payload in payloads} == {
+                    "SEC-RISK", "UX-WIRE", "QA-PLAN", "PM-PLAN",
+                }
+
+    def test_agent_question_is_recorded_during_assessment(self, tmp_db):
+        app = _make_app(tmp_db)
+        with app.app_context():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                pid, event = _setup_wave(app, tmp_db, tmp_dir)
+                client = FakeOpenAIClient()
+                client.add_tool_calls_response([{
+                    "name": "ask_question",
+                    "arguments": json.dumps({
+                        "requirement_id": "REQ-014",
+                        "question": "Which retention period applies to these records?",
+                        "blocking": False,
+                    }),
+                }])
+                client.add_tool_calls_response([{
+                    "name": "write_artifact",
+                    "arguments": json.dumps({
+                        "artifact_key": "DB-MODEL",
+                        "content": _rewrite("DB-MODEL", "## Entities\nUpdated body."),
+                    }),
+                }])
+                client.add_text_response("Done.")
+                for key in ["UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+                    client.add_tool_calls_response([{
+                        "name": "write_artifact",
+                        "arguments": json.dumps({
+                            "artifact_key": key,
+                            "content": _rewrite(key, "## Updated\nUpdated body."),
+                        }),
+                    }])
+                    client.add_text_response("Done.")
+
+                run_propagation_wave(app, pid, event["id"], client)
+
+                issues = db_module.list_agent_issues(pid, kind="question")
+                assert len(issues) == 1
+                assert issues[0]["raised_by_key"] == "DB-MODEL"
+                assert issues[0]["req_id"] == "REQ-014"
 
 
 if __name__ == "__main__":

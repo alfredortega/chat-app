@@ -334,13 +334,17 @@ def run_propagation_route(project_id: int, change_id: int):
     if event is None:
         return api_error("Change event not found", 404)
 
-    # Ensure jobs are queued (idempotent — existing jobs are left alone).
+    # Every role reviews its registered artifact for a detected requirements
+    # change. This intentionally does not restrict the wave to traced impact:
+    # each role owns the correctness of its own project artifact.
     jobs = db.list_propagation_jobs(change_id)
     if not jobs:
         from propagation.impact import queue_propagation_jobs
+        artifact_keys = [a["artifact_key"] for a in db.list_artifacts(project_id)]
         jobs = queue_propagation_jobs(project_id, change_id,
                                       event.get("changed_reqs") or [],
-                                      event.get("removed_reqs") or [])
+                                      event.get("removed_reqs") or [],
+                                      artefact_keys=artifact_keys)
     if not jobs:
         return api_error("No artifacts are affected by this change.", 400)
 
@@ -393,21 +397,48 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
     """Run the propagation wave for a change off the request thread.
 
     Executes in a dedicated app context (thread-safe session handling) so the
-    SSE job stream observes job state changes. Writes ``proposed`` proposals;
-    on failure marks queued/running jobs ``failed`` so the UI stops spinning.
+    SSE job stream observes job state changes. Validated rewrites are applied
+    as each agent finishes; on failure queued/running jobs become ``failed``.
     """
     def task():
         from app import get_client
         from propagation.agent import run_propagation_wave
-        from propagation.proposal import write_proposals
+        from propagation.proposal import apply_proposal, write_proposals
 
         client = get_client(endpoint)
+        applied_keys = []
+
+        def apply_completed_payload(payload):
+            """Persist and apply one valid rewrite before the next job starts."""
+            write_proposals(project_id, change_id, [payload])
+            job = next(
+                (j for j in db.list_propagation_jobs(change_id)
+                 if j["artifact_key"] == payload.artifact_key),
+                None,
+            )
+            result = apply_proposal(project_id, job["id"]) if job else None
+            if not result or result.get("error"):
+                raise RuntimeError(
+                    (result or {}).get("error")
+                    or f"Could not apply {payload.artifact_key}."
+                )
+            applied_keys.append(payload.artifact_key)
+
         payloads = run_propagation_wave(
             app, project_id, change_id, client, model_id=model_id,
+            on_payload=apply_completed_payload,
         )
-        ok_payloads = [p for p in payloads if p.status == "ok"]
-        if ok_payloads:
-            write_proposals(project_id, change_id, ok_payloads)
+        if applied_keys:
+            from git_integration import create_wave_commit
+            project = db.get_folder(project_id) or {}
+            event = next(
+                (e for e in db.list_change_events(project_id) if e["id"] == change_id),
+                {},
+            )
+            create_wave_commit(
+                project.get("workspace_dir", ""),
+                (event.get("summary") or f"change {change_id}")[:80],
+            )
         # Any queued/running job after the wave failed to capture a rewrite;
         # surface it rather than leaking an eternal spinner.
         # Note: payloads are RewritePayload dataclasses (attribute access).
@@ -418,6 +449,7 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
                 db.update_propagation_job(job["id"], state="failed",
                                           error=(target.errors[0] if target and target.errors
                                                  else "No valid rewrite captured by the agent."))
+                db.update_artifact(project_id, job["artifact_key"], status="stale")
 
     try:
         db.run_with_session(app, task)
@@ -427,6 +459,7 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
             for job in db.list_propagation_jobs(change_id):
                 if job["state"] in ("queued", "running"):
                     db.update_propagation_job(job["id"], state="failed", error=str(exc))
+                    db.update_artifact(project_id, job["artifact_key"], status="stale")
         try:
             db.run_with_session(app, mark_failed)
         except Exception:

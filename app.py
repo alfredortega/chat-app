@@ -32,6 +32,7 @@ from openai import OpenAI
 
 import database as db
 from tools import TOOLS, build_tools, execute_tool_call
+from tokens import estimate_messages_tokens, estimate_tokens
 from file_handler import (
     ensure_upload_dir, allowed_extension, extract_text, evict_upload_cache,
     build_file_context,
@@ -39,16 +40,16 @@ from file_handler import (
     scan_linked_folder, WARN_THRESHOLD,
 )
 
-# Tool results (read_file, fetch_webpage, run_python, …) can be enormous. The
+# Tool results (read_file, fetch_webpage, run_python, etc.) can be enormous. The
 # full result is persisted in the conversation history for UI/preview, but only
 # a capped slice is re-sent to the model on subsequent turns — otherwise one
 # big tool call blows the whole context window forever.
-TOOL_RESULT_CAP = 32_000
+TOOL_RESULT_CAP = 16_000
 
-# Pre-call context guard (Phase 6): if the estimated prompt tokens for a request
-# exceed this budget, the request is refused with guidance to compact instead of
-# wasting a doomed API call. Override with the MODEL_CONTEXT_BUDGET env var.
+# Pre-call context guard and request budget settings.
 MODEL_CONTEXT_BUDGET = int(os.environ.get("MODEL_CONTEXT_BUDGET", "128000"))
+MODEL_MAX_OUTPUT_TOKENS = int(os.environ.get("MODEL_MAX_OUTPUT_TOKENS", "4096"))
+MODEL_MAX_TOOL_ITERATIONS = int(os.environ.get("MODEL_MAX_TOOL_ITERATIONS", "12"))
 
 
 def _cap_tool_content(content: str) -> str:
@@ -59,7 +60,7 @@ def _cap_tool_content(content: str) -> str:
             "full result kept in conversation history]"
         )
     return content
-from chat_service import run_chat_turn, sse_event
+from chat_service import compact_api_history, run_chat_turn, sse_event
 
 def create_app(config=None):
     """Application factory for creating the Flask app."""
@@ -470,7 +471,10 @@ def chat(conv_id):
     system_prompt = {"role": "system", "content": base_system}
 
     # Fix #3: reuse already-fetched messages for API history (no second DB query)
-    history = [system_prompt] + _build_api_messages(messages_so_far)
+    history = compact_api_history(
+        [system_prompt] + _build_api_messages(messages_so_far),
+        MODEL_CONTEXT_BUDGET,
+    )
 
     client = get_client(endpoint)
 
@@ -502,11 +506,12 @@ def chat(conv_id):
             messages=history,
             tools=tools,
             tool_choice="auto" if tools_on else None,
-            max_iterations=25,
+            max_iterations=MODEL_MAX_TOOL_ITERATIONS,
             execute_tool_fn=execute_tool_fn,
             output_dir=output_dir,
             record_usage_fn=record_usage,
             max_context_tokens=MODEL_CONTEXT_BUDGET,
+            max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
         )
 
         # Process events and persist messages
@@ -613,7 +618,10 @@ def regenerate(conv_id):
         conv, conv_id, _tools_enabled(conv), context_section=context_section,
     )
     tools_on = _tools_enabled(conv)
-    history = [{"role": "system", "content": base_system}] + _build_api_messages(messages)
+    history = compact_api_history(
+        [{"role": "system", "content": base_system}] + _build_api_messages(messages),
+        MODEL_CONTEXT_BUDGET,
+    )
     client = get_client(endpoint)
 
     def record_usage(usage: dict):
@@ -638,11 +646,12 @@ def regenerate(conv_id):
             messages=history,
             tools=tools,
             tool_choice="auto" if tools_on else None,
-            max_iterations=25,
+            max_iterations=MODEL_MAX_TOOL_ITERATIONS,
             execute_tool_fn=execute_tool_fn,
             output_dir=output_dir,
             record_usage_fn=record_usage,
             max_context_tokens=MODEL_CONTEXT_BUDGET,
+            max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
         )
 
         pending_assistant_content = ""
@@ -745,29 +754,35 @@ def search_all():
 
 @legacy_bp.route("/api/conversations/<int:conv_id>/token-count", methods=["GET"])
 def token_count(conv_id):
-    """Return an estimated token count for the current conversation context."""
+    """Return an estimated token count for the next model request."""
     conv = db.get_conversation(conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
     messages = db.get_messages(conv_id)
-    total_chars = sum(len(m.get("content") or "") for m in messages)
-    conv_files     = db.list_conv_files(conv_id)
-    linked_folders = db.list_linked_folders(conv_id)
-    file_chars = 0
-    if linked_folders:
-        _, file_chars = build_linked_folder_context(linked_folders, conv_files)
-    elif conv_files:
-        # Reflect the size actually injected (build_file_context applies the
-        # per-conversation budget), not the raw on-disk character count.
-        file_chars = len(build_file_context(conv_files))
-    total_chars += file_chars
-    # Rough approximation: 1 token ≈ 4 characters
-    estimated_tokens = total_chars // 4
+    from conversation_context import build_conversation_context
+
+    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    tools_on = _tools_enabled(conv)
+    system_prompt, _output_dir = _build_system_prompt(
+        conv, conv_id, tools_on, context_section=context_section,
+    )
+    api_messages = compact_api_history(
+        [{"role": "system", "content": system_prompt}] + _build_api_messages(messages),
+        MODEL_CONTEXT_BUDGET,
+    )
+    message_tokens = estimate_messages_tokens(api_messages)
+    tool_tokens = estimate_tokens(json.dumps(build_tools("chat"), separators=(",", ":"))) if tools_on else 0
+    estimated_tokens = message_tokens + tool_tokens
+    message_chars = sum(len(str(m.get("content") or "")) for m in api_messages)
+    file_chars = scope_meta.get("chars", 0)
     return jsonify({
         "estimated_tokens": estimated_tokens,
-        "message_chars": total_chars - file_chars,
+        "message_chars": message_chars,
         "file_chars": file_chars,
-        "total_chars": total_chars,
+        "total_chars": message_chars,
+        "prompt_tokens": message_tokens,
+        "tool_schema_tokens": tool_tokens,
+        "history_compacted": len(api_messages) < len(messages) + 1,
         "last_usage": db.last_token_usage(conv_id),
     })
 

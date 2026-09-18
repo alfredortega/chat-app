@@ -14,6 +14,9 @@
 const ProjectPanel = {
   _open: false,
   _artifactsCollapsed: true,
+  _checkingChanges: false,
+  _checkComplete: false,
+  _workingArtifactKeys: new Set(),
 
   /** Open the panel for a project id. */
   async open(projectId) {
@@ -149,19 +152,38 @@ const ProjectPanel = {
     const btn = el.querySelector("#btnCheckChanges");
     if (!btn) return;
     btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Scanning…';
+      let checkCompleted = false;
+      this._checkingChanges = true;
+      this._checkComplete = false;
+      this._workingArtifactKeys.clear();
+      this._updateCheckProgress();
       try {
         const report = await API.scanProject(this._projectId);
-        const events = (report && report.change_events) || [];
+        let events = (report && report.change_events) || [];
+        let retrying = false;
+        if (!events.length) {
+          // A previous wave may have failed after the BA update itself was
+          // applied. In that case the scan sees no new BA delta, but its stale
+          // downstream jobs must still be retried.
+          const changes = await API.getProjectChanges(this._projectId);
+          const retryEvent = (changes || []).find((change) =>
+            (change.jobs || []).some((job) =>
+              ["failed", "needs_input"].includes(job.state)
+            )
+          );
+          if (retryEvent) {
+            events = [retryEvent];
+            retrying = true;
+          }
+        }
         if (!events.length) {
           const stale = (report && report.stale_artifacts) ? report.stale_artifacts.length : 0;
           alert(`Scan complete. No BA changes detected.${stale ? ` ${stale} artifact(s) marked stale.` : ""}`);
+          checkCompleted = true;
           return;
         }
 
         // Kick off propagation for every detected change event.
-        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Propagating ${events.length} change(s)…`;
         const startedChangeIds = [];
         const startFailures = [];
         for (const ev of events) {
@@ -188,41 +210,68 @@ const ProjectPanel = {
           startedChangeIds,
           {
             pollMs: 3000,
-            onProgress: (jobs) => this._showWorkingAgent(btn, jobs, true),
+            onProgress: (jobs) => this._showWorkingArtifacts(jobs),
           }
         );
 
         const stale = (report && report.stale_artifacts) ? report.stale_artifacts.length : 0;
-        let summary = `Found ${events.length} change event(s); propagation ${startedChangeIds.length} started.`;
+        let summary = `${retrying ? "Retried" : "Found"} ${events.length} change event(s); propagation ${startedChangeIds.length} started.`;
         if (startFailures.length) summary += ` ${startFailures.join(" ")}`;
         if (wavesDone) summary += " Propagation complete.";
         else summary += " Propagation still running — reopen the panel shortly.";
         if (stale) summary += ` ${stale} artifact(s) marked stale.`;
         alert(`Scan complete. ${summary}`);
+        checkCompleted = wavesDone;
       } catch (err) {
         alert("Scan failed: " + err.message);
       } finally {
+        this._checkingChanges = false;
+        this._checkComplete = checkCompleted;
+        this._workingArtifactKeys.clear();
         ProjectPanel.open(this._projectId);
       }
     });
   },
 
-  /**
-   * Update the "Check for changes" button while a wave runs: show the role of
-   * the job currently being assessed. Jobs that are still queued before the
-   * wave claims them show their role only once the wave reaches them.
-   */
-  _showWorkingAgent(btn, jobs, hasStarted) {
-    if (!hasStarted) return;
-    const terminal = [
-      "completed", "proposed", "applied", "failed",
-      "cancelled", "rejected", "needs_input", "pending", "queued",
-    ];
-    const working = (jobs || []).find((j) => !terminal.includes(j.state));
-    if (!working) return;
-    const role = this._artifactRoles[working.artifact_key] || working.batch_id || working.artifact_key || "Agent";
-    const who = String(role).split(":").pop().trim();
-    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>${_esc(who)} assessing changes…`;
+  /** Show spinners only for artifacts whose agents are actively running. */
+  _showWorkingArtifacts(jobs) {
+    this._workingArtifactKeys = new Set(
+      (jobs || [])
+        .filter((job) => job.state === "running" && job.artifact_key)
+        .map((job) => job.artifact_key)
+    );
+    this._updateCheckProgress();
+  },
+
+  _updateCheckProgress() {
+    const panel = document.getElementById("projectPanelContainer");
+    if (!panel) return;
+    const btn = panel.querySelector("#btnCheckChanges");
+    if (btn) {
+      btn.disabled = this._checkingChanges;
+      btn.innerHTML = this._checkingChanges
+        ? '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Checking for changes'
+        : '<i class="bi bi-arrow-repeat me-1"></i>Check for changes';
+    }
+    panel.querySelectorAll("[data-artifact-status]").forEach((statusEl) => {
+      const artifactKey = statusEl.closest("[data-artifact]")?.dataset.artifact;
+      statusEl.innerHTML = this._workingArtifactKeys.has(artifactKey)
+        ? this._workingStatus()
+        : this._statusBadge(statusEl.dataset.status);
+    });
+    panel.querySelectorAll("[data-role-status]").forEach((statusEl) => {
+      const role = statusEl.closest("[data-role]")?.dataset.role;
+      const isWorking = [...this._workingArtifactKeys].some(
+        (artifactKey) => this._artifactRoles[artifactKey] === role
+      );
+      statusEl.innerHTML = isWorking
+        ? this._workingStatus()
+        : this._statusBadge(statusEl.dataset.status);
+    });
+  },
+
+  _workingStatus() {
+    return '<span class="spinner-border spinner-border-sm" role="status" aria-label="Working"></span>';
   },
 
   /**
@@ -308,15 +357,15 @@ const ProjectPanel = {
       : "";
 
     const roleHtml = rows.map((row) => `
-      <div class="project-role-group">
+      <div class="project-role-group" data-role="${_esc(row.role)}">
         <div class="project-role-header">
           <span class="project-role-name">${row.role}</span>
-          ${this._statusBadge(row.rollup)}
+          <span data-role-status data-status="${_esc(row.rollup)}">${this._workingArtifactKeys.size && row.artifacts.some((a) => this._workingArtifactKeys.has(a.artifact_key)) ? this._workingStatus() : this._statusBadge(row.rollup)}</span>
         </div>
         ${row.artifacts.map((a) => `
           <div class="project-artifact-row" data-artifact="${a.artifact_key}">
             <span class="project-artifact-key">${a.artifact_key}</span>
-            ${this._statusBadge(a.status)}
+            <span data-artifact-status data-status="${_esc(a.status)}">${this._workingArtifactKeys.has(a.artifact_key) ? this._workingStatus() : this._statusBadge(a.status)}</span>
             ${a.status === "current" && a.error ? " — " + a.error : ""}
           </div>`).join("")}
       </div>`).join("");
@@ -372,9 +421,12 @@ const ProjectPanel = {
           <span class="badge bg-info text-dark">Token budget: ${_esc(settings.token_budget || "unlimited")}</span>
           <span class="badge bg-warning text-dark">Unresolved assumptions: ${assumptions.unresolved_count || 0}</span>
           <span class="badge bg-secondary">Open questions: ${openQuestions.length}</span>
-          <button type="button" class="btn btn-sm btn-outline-primary" id="btnCheckChanges">
-            <i class="bi bi-arrow-repeat me-1"></i>Check for changes
-          </button>
+           <button type="button" class="btn btn-sm btn-outline-primary" id="btnCheckChanges">
+             ${this._checkingChanges
+               ? '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Checking for changes'
+               : '<i class="bi bi-arrow-repeat me-1"></i>Check for changes'}
+           </button>
+           ${this._checkComplete ? '<span class="text-success small fw-semibold"><i class="bi bi-check-square-fill me-1" aria-hidden="true"></i>Done!</span>' : ""}
         </div>
 
         <h6 class="mt-3">Needs your input</h6>

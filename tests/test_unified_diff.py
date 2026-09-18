@@ -77,6 +77,14 @@ class TestApplyUnifiedDiff:
         distorted = "".join(fixed_lines)
         assert apply_unified_diff(old, distorted) == new
 
+    def test_hunk_beyond_initial_fuzzy_window(self):
+        old = "".join(f"line{i}\n" for i in range(400))
+        new = old.replace("line320\n", "line320 changed\n")
+
+        # The hunk is correctly located well after the initial 250-line
+        # window. The applier must honor its claimed position.
+        assert apply_unified_diff(old, _patch(old, new)) == new
+
     def test_missing_context_returns_none(self):
         result = apply_unified_diff("aaa\nbbb\nccc\n", "@@ -5,1 +5,1 @@\n-zzz\n+yyy\n")
         assert result is None

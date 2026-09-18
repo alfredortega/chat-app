@@ -225,12 +225,13 @@ def build_agent_prompt(
     context: str,
     change_event: dict,
     current_artifact: str,
+    artifact_key: str = "",
 ) -> list[dict]:
     """Assemble the API message list for a propagation job.
 
-    All inputs are bounded (Phase 5): oversize upstream context, diffs and
-    artifacts are downsampled to a structural preview instead of blocking or
-    blowing the model window.
+    All inline inputs are bounded. Before producing a diff, the agent reads its
+    exact artifact through ``read_artifact`` so patches retain full-file
+    accuracy without unbounded prompt requests.
     """
     from file_handler import _smart_preview
 
@@ -253,7 +254,11 @@ def build_agent_prompt(
 
     instructions = (
         "You are updating ONE artifact as part of a coordinated change. "
-        "Emit the changes as a unified diff and pass it to the write_artifact "
+        "First assess the COMPLETE current artifact against the change event. "
+        f"Call read_artifact for '{artifact_key}' before writing a diff; the inline "
+        "artifact text may be a preview. "
+        "If you need clarification, call ask_question so it is documented for "
+        "the Business Analyst. Then emit the changes as a unified diff and pass it to the write_artifact "
         "tool in the 'diff' parameter. The server will apply the diff to the "
         "current artifact. Only include what actually changed from the CURRENT "
         "ARTIFACT; do not regenerate unchanged sections, do not summarise, and "
@@ -306,13 +311,15 @@ def run_propagation_wave(
     client,
     model_id: str = "fake-model",
     max_iterations: int = 25,
+    on_payload: Callable[[RewritePayload], None] | None = None,
 ) -> list[RewritePayload]:
     """
     Run every queued job for a change event using ``client`` (a fake or real
     model client) and return validated in-memory rewrite payloads.
 
-    Nothing is written to disk and no proposals are persisted. Same-role
-    artifacts for one change share a single conversation (D16).
+    ``on_payload`` is invoked after each valid artifact rewrite, allowing the
+    caller to persist it before the next agent begins. Same-role artifacts for
+    one change share a single conversation (D16).
     """
     import database as db_module
     from chat_service import run_chat_turn
@@ -352,7 +359,12 @@ def run_propagation_wave(
         changed_reqs = event.get("changed_reqs") or []
         removed_reqs = event.get("removed_reqs") or []
 
-        jobs = db_module.list_propagation_jobs(change_id)
+        # Retries must process only work the route re-queued. Previously
+        # applied artifacts are already current and must not be regenerated.
+        jobs = [
+            job for job in db_module.list_propagation_jobs(change_id)
+            if job["state"] in ("pending", "queued", "running")
+        ]
 
         # Load the dependency graph ONCE per wave — every job's upstream prompt
         # reads from this same snapshot (D13). Re-querying per job was wasted DB
@@ -373,6 +385,7 @@ def run_propagation_wave(
             # being worked and push previously finished jobs to a terminal
             # state so the UI can show "who is assessing changes now".
             db_module.update_propagation_job(job["id"], state="running")
+            db_module.update_artifact(project_id, artifact_key, status="updating")
             meta = artifact_meta.get(artifact_key, {})
             role = meta.get("role", "") or _role_from_template(project_id, artifact_key)
             persona_id = meta.get("role_persona_id")
@@ -388,14 +401,15 @@ def run_propagation_wave(
                 context,
                 event,
                 current,
+                artifact_key,
             )
 
-            # The complete current artifact and upstream context are already in
-            # the prompt. Offering discovery/question tools lets some providers
-            # ignore the required write and spend the whole tool loop reading.
+            # The current artifact is supplied in full. Agents can also record
+            # questions raised while assessing the change, but cannot discover
+            # or mutate unrelated artifacts.
             tools = [
                 tool for tool in build_tools("propagation")
-                if tool["function"]["name"] == "write_artifact"
+                if tool["function"]["name"] in ("read_artifact", "write_artifact", "ask_question")
             ]
             old_version = meta.get("version", 1)
             derives_from = meta.get("derives_from") or []
@@ -435,9 +449,32 @@ def run_propagation_wave(
                             "success": True,
                             "display": "Captured rewrite in memory.",
                             "result": (
-                                "Artifact rewrite captured. Reply only with DONE; "
-                                "do not call another tool."
+                                "Artifact rewrite captured. If you have an unresolved "
+                                "question, document it with ask_question; otherwise reply DONE."
                             ),
+                        }
+                    if name == "ask_question":
+                        try:
+                            args = json.loads(args_json)
+                        except Exception:
+                            return {"success": False, "display": "bad json", "result": ""}
+                        from propagation.qa import ask_question
+                        question = (args.get("question") or "").strip()
+                        if not question:
+                            return {
+                                "success": False,
+                                "display": "missing question",
+                                "result": "Provide a non-empty question.",
+                            }
+                        issue = ask_question(
+                            project_id, artifact_key, persona_id, change_id,
+                            job.get("depth", 0), args.get("requirement_id"), question,
+                            blocking=bool(args.get("blocking", False)),
+                        )
+                        return {
+                            "success": True,
+                            "display": "Question recorded.",
+                            "result": "Question recorded for the Business Analyst. Continue assessing and update the artifact if possible.",
                         }
                     if name == "read_artifact":
                         try:
@@ -463,25 +500,40 @@ def run_propagation_wave(
             # the first job visibly stuck for minutes. Do not send this
             # OpenRouter-specific field to other compatible endpoints.
             openrouter_request = "openrouter.ai" in str(getattr(client, "base_url", ""))
-            events = run_chat_turn(
-                client=client,
-                model_id=model_id,
-                messages=messages,
-                tools=tools,
-                # A propagation job is not useful unless it captures a rewrite.
-                # Require it on the first turn, then allow the model to finish
-                # normally after the tool result is supplied.
-                initial_tool_choice={
-                    "type": "function",
-                    "function": {"name": "write_artifact"},
-                },
-                max_iterations=max_iterations,
-                execute_tool_fn=handler,
-                output_dir=workspace_dir,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-                request_timeout=REQUEST_TIMEOUT_SECONDS,
-                request_extra_body={"reasoning": {"enabled": False}} if openrouter_request else None,
-            )
+            try:
+                events = run_chat_turn(
+                    client=client,
+                    model_id=model_id,
+                    messages=messages,
+                    tools=tools,
+                    # A diff must be based on exact content, not the bounded inline
+                    # preview. Force the first turn to retrieve this artifact.
+                    initial_tool_choice={
+                        "type": "function",
+                        "function": {"name": "read_artifact"},
+                    },
+                    max_iterations=max_iterations,
+                    execute_tool_fn=handler,
+                    output_dir=workspace_dir,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                    request_timeout=REQUEST_TIMEOUT_SECONDS,
+                    request_extra_body={"reasoning": {"enabled": False}} if openrouter_request else None,
+                )
+            except Exception as exc:
+                # One unavailable model response must not abort the whole wave.
+                # Record a terminal result for this agent and let later agents run.
+                message = f"Agent execution failed: {exc}"
+                payloads.append(RewritePayload(
+                    artifact_key=artifact_key,
+                    content="",
+                    version=old_version,
+                    status="rejected",
+                    errors=[message],
+                    prompt=json.dumps(messages, default=str),
+                ))
+                db_module.update_propagation_job(job["id"], state="failed", error=message)
+                db_module.update_artifact(project_id, artifact_key, status="stale")
+                continue
             for ev in events:
                 if ev.get("type") == "error":
                     payloads.append(RewritePayload(
@@ -493,6 +545,37 @@ def run_propagation_wave(
                         prompt=json.dumps(messages, default=str),
                     ))
                     break
+
+            if "content" not in rewrite_diff and not rewrite_diff.get("diff"):
+                retry_messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        "Your last response did not submit an artifact update. "
+                        "Call write_artifact now with the complete change as a "
+                        "unified diff in the diff field. Do not reply with prose."
+                    ),
+                }]
+                try:
+                    retry_events = run_chat_turn(
+                        client=client,
+                        model_id=model_id,
+                        messages=retry_messages,
+                        tools=tools,
+                        initial_tool_choice={
+                            "type": "function",
+                            "function": {"name": "write_artifact"},
+                        },
+                        max_iterations=max_iterations,
+                        execute_tool_fn=handler,
+                        output_dir=workspace_dir,
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                        request_timeout=REQUEST_TIMEOUT_SECONDS,
+                        request_extra_body={"reasoning": {"enabled": False}} if openrouter_request else None,
+                    )
+                    for _ in retry_events:
+                        pass
+                except Exception:
+                    pass
 
             # Resolve the rewritten full content: either the model handed us
             # the whole file ('content') or, much more cheaply, a unified diff
@@ -520,6 +603,9 @@ def run_propagation_wave(
                     errors=[diff_error or "No write_artifact call returned by the agent."],
                     prompt=json.dumps(messages, default=str),
                 ))
+                db_module.update_propagation_job(job["id"], state="failed",
+                                                 error=diff_error or "No write_artifact call returned by the agent.")
+                db_module.update_artifact(project_id, artifact_key, status="stale")
                 continue
 
             # Validate the rewrite. If it passes, apply the guards + overlay.
@@ -556,6 +642,22 @@ def run_propagation_wave(
                 except Exception:
                     fm = {}
                 overlay.set(artifact_key, normalized)
+                if on_payload:
+                    try:
+                        on_payload(payload)
+                    except Exception as exc:
+                        message = f"Could not persist agent result: {exc}"
+                        db_module.update_propagation_job(
+                            job["id"], state="failed", error=message
+                        )
+                        db_module.update_artifact(project_id, artifact_key, status="stale")
+            else:
+                job_state = "needs_input" if assessment.needs_review else "failed"
+                artifact_status = "blocked" if assessment.needs_review else "stale"
+                db_module.update_propagation_job(
+                    job["id"], state=job_state, error="; ".join(assessment.errors)
+                )
+                db_module.update_artifact(project_id, artifact_key, status=artifact_status)
 
         return payloads
 

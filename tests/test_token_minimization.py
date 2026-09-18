@@ -235,6 +235,28 @@ class TestUsageRecordAndGuard:
         assert usage["completion_tokens"] > 0
         assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
 
+    def test_compact_api_history_preserves_recent_turns(self):
+        from chat_service import compact_api_history
+
+        messages = [{"role": "system", "content": "system"}]
+        for index in range(10):
+            messages.extend([
+                {"role": "user", "content": f"old question {index} " + ("x" * 300)},
+                {"role": "assistant", "content": f"old answer {index} " + ("y" * 300)},
+            ])
+        messages.extend([
+            {"role": "user", "content": "latest question"},
+            {"role": "assistant", "content": "latest answer"},
+        ])
+
+        compacted = compact_api_history(messages, max_tokens=300, keep_recent=2)
+
+        assert len(compacted) < len(messages)
+        assert compacted[0]["role"] == "system"
+        assert "Earlier conversation summary" in compacted[2]["content"]
+        assert compacted[-1]["content"] == "latest answer"
+        assert tokens.estimate_messages_tokens(compacted) <= 300
+
 
 # ── Phase 6: DB token accounting + chat route persistence ─────────────────────
 
@@ -288,6 +310,9 @@ class TestTokenUsageDbAndRoute:
             body = rv2.get_json()
             assert body["last_usage"] is not None
             assert body["last_usage"]["total_tokens"] > 0
+            assert body["prompt_tokens"] > 0
+            assert "tool_schema_tokens" in body
+            assert "history_compacted" in body
 
 
 # ── Phase 6: deduplicated context build ───────────────────────────────────────

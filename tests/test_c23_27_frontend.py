@@ -97,6 +97,13 @@ class TestStaticAssetsExist:
         assert ".diff-del" in css
         assert ".folder-project-badge" in css
 
+    def test_check_for_changes_retries_failed_wave(self):
+        path = os.path.join(ROOT, "static", "js", "projects.js")
+        with open(path) as f:
+            js = f.read()
+        assert '"failed", "needs_input"' in js
+        assert "retryEvent" in js
+
 
 class TestAPIShapeForUI:
     """The API returns the shapes the project panel / review modal expect."""

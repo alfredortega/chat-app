@@ -108,13 +108,13 @@ class TestJobStream:
 
 class TestRunPropagationRoute:
     """The 'Run propagation' button end-to-end: queues jobs, runs the agent
-    wave through a scripted client, writes reviewable proposals."""
+    wave through a scripted client, and applies validated artifact updates."""
 
     def _scripted_client(self):
         from tests.fakes import FakeOpenAIClient
 
         client = FakeOpenAIClient()
-        for key in ["DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
+        for key in ["BA-REQ", "DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"]:
             client.add_tool_calls_response([{
                 "name": "write_artifact",
                 "arguments": json.dumps({
@@ -125,7 +125,7 @@ class TestRunPropagationRoute:
             client.add_text_response("Done.")
         return client
 
-    def test_run_propagation_writes_proposals(self, tmp_db, monkeypatch):
+    def test_run_propagation_checks_all_roles_and_applies_updates(self, tmp_db, monkeypatch):
         app = _app(tmp_db)
         with app.app_context():
             db_module.set_setting("allow_local_file_access", "1")
@@ -162,7 +162,6 @@ class TestRunPropagationRoute:
             # Poll until the background wave marks jobs terminal.
             import time
             deadline = time.time() + 15
-            proposal_paths = []
             while time.time() < deadline:
                 time.sleep(0.1)
                 with app.app_context():
@@ -177,8 +176,14 @@ class TestRunPropagationRoute:
             with app.app_context():
                 from propagation.proposal import list_proposals
                 proposals = list_proposals(pid, event["id"])
-            assert len(proposals) == 5, proposals
-            assert all(p["artifact_key"] in {"DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN"} for p in proposals)
+                jobs = db_module.list_propagation_jobs(event["id"])
+                artifacts = db_module.list_artifacts(pid)
+            assert len(proposals) == 6, proposals
+            assert {p["artifact_key"] for p in proposals} == {
+                "BA-REQ", "DB-MODEL", "UX-WIRE", "SEC-RISK", "QA-PLAN", "PM-PLAN",
+            }
+            assert {job["state"] for job in jobs} == {"applied"}
+            assert {artifact["status"] for artifact in artifacts} == {"current"}
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -251,7 +256,7 @@ class TestRunPropagationRoute:
         the job instead of nuking everything with a crash traceback."""
         from propagation.agent import RewritePayload
 
-        def fake_run_wave(app, project_id, change_id, client, model_id=""):
+        def fake_run_wave(app, project_id, change_id, client, model_id="", on_payload=None):
             return [
                 RewritePayload(
                     artifact_key="DB-MODEL", content="",
