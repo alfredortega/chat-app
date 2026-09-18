@@ -83,7 +83,7 @@ TOOLS = [
                 "index (e.g. 'notes.md', 'src/app.py'). Use this when the user "
                 "asks about a file whose contents were only previewed, or "
                 "when you need details beyond the preview. Returns up to "
-                "32,000 characters."
+                "16,000 characters."
             ),
             "parameters": {
                 "type": "object",
@@ -378,7 +378,7 @@ PROFILE_TOOL_MAP = {
 LOCAL_ACCESS_TOOLS = {"write_file", "read_file", "list_directory", "run_python"}
 
 
-def build_tools(context: str) -> list[dict]:
+def build_tools(context: str, names: set[str] | None = None) -> list[dict]:
     """
     Return the tool definitions for the given context/profile.
 
@@ -396,10 +396,14 @@ def build_tools(context: str) -> list[dict]:
     if not db.local_file_access_enabled():
         if context == "propagation":
             return []
-        return [t for t in TOOLS if t["function"]["name"] not in LOCAL_ACCESS_TOOLS]
-    if context == "propagation":
-        return PROPAGATION_TOOLS
-    return TOOLS
+        available = [t for t in TOOLS if t["function"]["name"] not in LOCAL_ACCESS_TOOLS]
+    elif context == "propagation":
+        available = PROPAGATION_TOOLS
+    else:
+        available = TOOLS
+    if names is None:
+        return available
+    return [tool for tool in available if tool["function"]["name"] in names]
 
 
 def _is_tool_allowed_for_context(tool_name: str, context: str) -> bool:

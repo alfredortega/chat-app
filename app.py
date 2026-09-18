@@ -32,7 +32,7 @@ from openai import OpenAI
 
 import database as db
 from tools import TOOLS, build_tools, execute_tool_call
-from tokens import estimate_messages_tokens, estimate_tokens
+from tokens import estimate_messages_tokens, estimate_request_tokens, estimate_tokens
 from file_handler import (
     ensure_upload_dir, allowed_extension, extract_text, evict_upload_cache,
     build_file_context,
@@ -50,6 +50,24 @@ TOOL_RESULT_CAP = 16_000
 MODEL_CONTEXT_BUDGET = int(os.environ.get("MODEL_CONTEXT_BUDGET", "128000"))
 MODEL_MAX_OUTPUT_TOKENS = int(os.environ.get("MODEL_MAX_OUTPUT_TOKENS", "4096"))
 MODEL_MAX_TOOL_ITERATIONS = int(os.environ.get("MODEL_MAX_TOOL_ITERATIONS", "12"))
+MODEL_HISTORY_KEEP_RECENT = int(os.environ.get("MODEL_HISTORY_KEEP_RECENT", "8"))
+MODEL_CONTEXT_RESERVE = int(os.environ.get("MODEL_CONTEXT_RESERVE", "4096"))
+MODEL_CONTEXT_CHARS = int(os.environ.get("MODEL_CONTEXT_CHARS", "60000"))
+MODEL_PRICING = json.loads(os.environ.get("MODEL_PRICING_JSON", "{}"))
+MODEL_REQUEST_EXTRA_BODY = json.loads(os.environ.get("MODEL_REQUEST_EXTRA_BODY_JSON", "{}"))
+
+
+def _context_char_budget() -> int:
+    """Reserve room for history, tools, and the requested completion."""
+    token_budget = max(1, MODEL_CONTEXT_BUDGET - MODEL_CONTEXT_RESERVE - MODEL_MAX_OUTPUT_TOKENS)
+    return max(12_000, min(MODEL_CONTEXT_CHARS, token_budget * 4 // 3))
+
+
+def _usage_cost(model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
+    pricing = MODEL_PRICING.get(model_id) or MODEL_PRICING.get("default") or {}
+    input_rate = float(pricing.get("input_per_million", 0) or 0)
+    output_rate = float(pricing.get("output_per_million", 0) or 0)
+    return (prompt_tokens * input_rate + completion_tokens * output_rate) / 1_000_000
 
 
 def _cap_tool_content(content: str) -> str:
@@ -463,7 +481,9 @@ def chat(conv_id):
     # Build the file/artifact context ONCE so the system prompt and the SSE
     # scope disclosure share the same snapshot (no double build per request).
     from conversation_context import build_conversation_context
-    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    context_section, scope_meta = build_conversation_context(
+        conv, conv_id, max_chars=_context_char_budget()
+    )
     base_system, output_dir = _build_system_prompt(
         conv, conv_id, _tools_enabled(conv), context_section=context_section,
     )
@@ -471,14 +491,22 @@ def chat(conv_id):
     system_prompt = {"role": "system", "content": base_system}
 
     # Fix #3: reuse already-fetched messages for API history (no second DB query)
+    tool_names = _chat_tool_names(user_content, context_section) if tools_on else set()
+    tools = build_tools("chat", tool_names) if tools_on else None
     history = compact_api_history(
         [system_prompt] + _build_api_messages(messages_so_far),
-        MODEL_CONTEXT_BUDGET,
+        max(1, MODEL_CONTEXT_BUDGET - MODEL_CONTEXT_RESERVE),
+        keep_recent=MODEL_HISTORY_KEEP_RECENT,
     )
 
     client = get_client(endpoint)
 
     def record_usage(usage: dict):
+        usage["model_id"] = model_id
+        usage["provider"] = (endpoint or {}).get("base_url", "")
+        usage["cost_usd"] = _usage_cost(
+            model_id, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        )
         db.record_token_usage(conv_id, **usage)
         return None
 
@@ -490,8 +518,6 @@ def chat(conv_id):
 
         # Disclose what context was injected for this message (scope/tokens/warn)
         yield sse_event({"type": "scope", "meta": scope_meta})
-
-        tools = build_tools("chat") if tools_on else None
 
         def execute_tool_fn(fn_name, fn_args, output_dir):
             result = execute_tool_call(
@@ -512,6 +538,7 @@ def chat(conv_id):
             record_usage_fn=record_usage,
             max_context_tokens=MODEL_CONTEXT_BUDGET,
             max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
+            request_extra_body=MODEL_REQUEST_EXTRA_BODY or None,
         )
 
         # Process events and persist messages
@@ -613,24 +640,32 @@ def regenerate(conv_id):
 
     # Build context once and reuse for the SSE scope disclosure (no double build).
     from conversation_context import build_conversation_context
-    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    context_section, scope_meta = build_conversation_context(
+        conv, conv_id, max_chars=_context_char_budget()
+    )
     base_system, output_dir = _build_system_prompt(
         conv, conv_id, _tools_enabled(conv), context_section=context_section,
     )
     tools_on = _tools_enabled(conv)
+    tool_names = _chat_tool_names(messages[-1].get("content", ""), context_section) if tools_on else set()
+    tools = build_tools("chat", tool_names) if tools_on else None
     history = compact_api_history(
         [{"role": "system", "content": base_system}] + _build_api_messages(messages),
-        MODEL_CONTEXT_BUDGET,
+        max(1, MODEL_CONTEXT_BUDGET - MODEL_CONTEXT_RESERVE),
+        keep_recent=MODEL_HISTORY_KEEP_RECENT,
     )
     client = get_client(endpoint)
 
     def record_usage(usage: dict):
+        usage["model_id"] = model_id
+        usage["provider"] = (endpoint or {}).get("base_url", "")
+        usage["cost_usd"] = _usage_cost(
+            model_id, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        )
         db.record_token_usage(conv_id, **usage)
         return None
 
     def generate():
-        tools = build_tools("chat") if tools_on else None
-
         # Disclose what context was injected for this message (scope/tokens/warn)
         yield sse_event({"type": "scope", "meta": scope_meta})
 
@@ -652,6 +687,7 @@ def regenerate(conv_id):
             record_usage_fn=record_usage,
             max_context_tokens=MODEL_CONTEXT_BUDGET,
             max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
+            request_extra_body=MODEL_REQUEST_EXTRA_BODY or None,
         )
 
         pending_assistant_content = ""
@@ -761,17 +797,26 @@ def token_count(conv_id):
     messages = db.get_messages(conv_id)
     from conversation_context import build_conversation_context
 
-    context_section, scope_meta = build_conversation_context(conv, conv_id)
+    context_section, scope_meta = build_conversation_context(
+        conv, conv_id, max_chars=_context_char_budget()
+    )
     tools_on = _tools_enabled(conv)
     system_prompt, _output_dir = _build_system_prompt(
         conv, conv_id, tools_on, context_section=context_section,
     )
     api_messages = compact_api_history(
         [{"role": "system", "content": system_prompt}] + _build_api_messages(messages),
-        MODEL_CONTEXT_BUDGET,
+        max(1, MODEL_CONTEXT_BUDGET - MODEL_CONTEXT_RESERVE),
+        keep_recent=MODEL_HISTORY_KEEP_RECENT,
     )
+    last_user_content = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+        "",
+    )
+    tool_names = _chat_tool_names(last_user_content, context_section) if tools_on else set()
+    tools = build_tools("chat", tool_names) if tools_on else None
     message_tokens = estimate_messages_tokens(api_messages)
-    tool_tokens = estimate_tokens(json.dumps(build_tools("chat"), separators=(",", ":"))) if tools_on else 0
+    tool_tokens = estimate_request_tokens([], tools, conv.get("model_id") or "")
     estimated_tokens = message_tokens + tool_tokens
     message_chars = sum(len(str(m.get("content") or "")) for m in api_messages)
     file_chars = scope_meta.get("chars", 0)
@@ -1401,6 +1446,23 @@ def _tools_enabled(conv: dict) -> bool:
     """
     # enable_tools is stored as INTEGER (1/0); default to enabled if absent.
     return bool(conv.get("enable_tools", 1))
+
+
+def _chat_tool_names(user_content: str, context_section: str) -> set[str]:
+    """Choose a small tool schema for the current request."""
+    text = f"{user_content}\n{context_section}".lower()
+    names = set()
+    if context_section:
+        names.add("read_named_file")
+    if any(word in text for word in ("http://", "https://", "web search", "research", "source")):
+        names.add("fetch_webpage")
+    if any(word in text for word in ("run", "execute", "calculate", "python", "pandas", "plot", "csv")):
+        names.add("run_python")
+    if any(word in text for word in ("save", "write", "create a file", "edit a file", "update a file")):
+        names.update({"write_file", "read_file"})
+    if any(word in text for word in ("list files", "directory", "folder contents")):
+        names.add("list_directory")
+    return names
 
 
 def _build_system_prompt(

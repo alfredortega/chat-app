@@ -12,20 +12,22 @@ Yields structured events as plain dicts:
 from typing import Iterator, Optional, Callable
 import json
 
-from tokens import estimate_messages_tokens, estimate_tokens
+from tokens import estimate_messages_tokens, estimate_request_tokens, estimate_tools_tokens, estimate_tokens
 
 # Tool results fed back to the model on the next tool-call iteration are capped
 # so one oversized result cannot blow the whole context window. The full result
 # is still persisted to the conversation history for UI/preview.
 TOOL_RESULT_CAP = 16_000
+TOOL_RESULT_CAPS = {"run_python": 8_000, "fetch_webpage": 12_000, "read_file": 16_000}
 MAX_IDENTICAL_TOOL_CALLS = 2
 
 
-def _cap_tool_content(content: str) -> str:
+def _cap_tool_content(content: str, tool_name: str = "") -> str:
     """Bound tool output re-sent to the model on subsequent iterations."""
-    if content and len(content) > TOOL_RESULT_CAP:
-        return content[:TOOL_RESULT_CAP] + (
-            f"\n\n[… tool output truncated at {TOOL_RESULT_CAP:,} chars — "
+    cap = TOOL_RESULT_CAPS.get(tool_name, TOOL_RESULT_CAP)
+    if content and len(content) > cap:
+        return content[:cap] + (
+            f"\n\n[… tool output truncated at {cap:,} chars — "
             "full result kept in conversation history]"
         )
     return content
@@ -107,6 +109,8 @@ def _build_usage_record(
     history: list[dict],
     assistant_content: str,
     stream_usage,
+    tools: Optional[list] = None,
+    model_id: str = "",
 ) -> dict:
     """
     Turn a streamed usage object (or None) into a normalised usage dict.
@@ -114,8 +118,8 @@ def _build_usage_record(
     Prefers the provider-reported token counts and falls back to local
     estimates (Phase 6 real accounting).
     """
-    est_prompt = estimate_messages_tokens(history)
-    est_completion = estimate_tokens(assistant_content)
+    est_prompt = estimate_request_tokens(history, tools, model_id)
+    est_completion = estimate_tokens(assistant_content, model_id)
 
     if stream_usage is not None:
         pt = getattr(stream_usage, "prompt_tokens", None)
@@ -130,6 +134,7 @@ def _build_usage_record(
                     + (int(ct) if ct is not None else est_completion)
                 ),
                 "estimated": False,
+                "tool_schema_tokens": estimate_tools_tokens(tools, model_id),
             }
 
     return {
@@ -137,6 +142,7 @@ def _build_usage_record(
         "completion_tokens": est_completion,
         "total_tokens": est_prompt + est_completion,
         "estimated": True,
+        "tool_schema_tokens": estimate_tools_tokens(tools, model_id),
     }
 
 
@@ -198,7 +204,7 @@ def run_chat_turn(
             return
 
         if max_context_tokens:
-            estimate = estimate_messages_tokens(history)
+            estimate = estimate_request_tokens(history, tools, model_id)
             if estimate > max_context_tokens:
                 yield {
                     "type": "error",
@@ -297,7 +303,7 @@ def run_chat_turn(
 
         # Persist per-call token accounting (provider usage when available).
         if record_usage_fn:
-            record_usage_fn(_build_usage_record(history, assistant_content, last_usage))
+            record_usage_fn(_build_usage_record(history, assistant_content, last_usage, tools, model_id))
 
         # Handle zero-chunk response: if no chunks were yielded, continue to the
         # next iteration but count it as progress so a provider that repeatedly
@@ -368,7 +374,7 @@ def run_chat_turn(
                 history.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": _cap_tool_content(result["result"]),
+                    "content": _cap_tool_content(result["result"], fn_name),
                 })
 
             iteration += 1

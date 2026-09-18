@@ -41,6 +41,10 @@ class TestBuildTools:
         assert "run_python" in tool_names
         assert "write_artifact" not in tool_names
 
+    def test_chat_tool_filter_returns_only_requested_tools(self):
+        selected = tools.build_tools("chat", {"read_file"})
+        assert [item["function"]["name"] for item in selected] == ["read_file"]
+
 
 class TestLocalFileAccessLock:
     """Global 'allow_local_file_access' setting must filter the tool schema and

@@ -40,6 +40,14 @@ class TestTokenEstimator:
         assert big > tokens.estimate_messages_tokens([{"role": "user", "content": "hi"}])
         assert tokens.estimate_messages_tokens([]) == 0
 
+    def test_request_estimate_includes_tool_schema(self):
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [{"type": "function", "function": {
+            "name": "read_file",
+            "description": "Read a file with a long description " * 20,
+        }}]
+        assert tokens.estimate_request_tokens(messages, tools) > tokens.estimate_messages_tokens(messages)
+
 
 # ── Phase 4: preview-only linked folder injection ─────────────────────────────
 
@@ -234,6 +242,7 @@ class TestUsageRecordAndGuard:
         assert usage["prompt_tokens"] > 0
         assert usage["completion_tokens"] > 0
         assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+        assert usage["tool_schema_tokens"] == 0
 
     def test_compact_api_history_preserves_recent_turns(self):
         from chat_service import compact_api_history
@@ -272,12 +281,17 @@ class TestTokenUsageDbAndRoute:
         with app.app_context():
             conv = db.create_conversation("C", "m")
             db.record_token_usage(conv["id"], prompt_tokens=10, completion_tokens=5,
-                                  total_tokens=15, estimated=False)
+                                  total_tokens=15, estimated=False, model_id="test-model",
+                                  provider="http://provider.test", cost_usd=0.12)
             db.record_token_usage(conv["id"], prompt_tokens=20, completion_tokens=8,
                                   total_tokens=28, estimated=True)
             last = db.last_token_usage(conv["id"])
             assert last["prompt_tokens"] == 20
             assert last["estimated"] is True
+            first = db.TokenUsage.query.filter_by(conversation_id=conv["id"]).order_by(db.TokenUsage.id.asc()).first()
+            assert first.model_id == "test-model"
+            assert first.provider == "http://provider.test"
+            assert first.cost_usd == 0.12
 
     def test_chat_route_records_usage_and_exposes_it(self, tmp_db, monkeypatch):
         from app import create_app

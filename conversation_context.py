@@ -105,7 +105,11 @@ def project_scoped_context(conv: dict) -> tuple[str, str, list[str]] | None:
     return text, role, read_keys
 
 
-def build_conversation_context(conv: dict, conv_id: int) -> tuple[str, dict]:
+def build_conversation_context(
+    conv: dict,
+    conv_id: int,
+    max_chars: int | None = None,
+) -> tuple[str, dict]:
     """
     Build the context section for a conversation + a ``meta`` dictionary
     describing the scope (``scope``, ``role``, ``chars``, ``warn``).
@@ -120,9 +124,11 @@ def build_conversation_context(conv: dict, conv_id: int) -> tuple[str, dict]:
     if scoped is not None:
         text, role, read_keys = scoped
         if conv_files:
-            upload_ctx = build_file_context(conv_files)
+            upload_ctx = build_file_context(conv_files, max_chars=max_chars or 100_000)
             if upload_ctx:
                 text += "\n\n" + upload_ctx
+        if max_chars and len(text) > max_chars:
+            text = text[:max_chars] + "\n\n[Project context truncated to fit the request budget.]"
         return text, {
             "scope": "role",
             "role": role,
@@ -136,7 +142,7 @@ def build_conversation_context(conv: dict, conv_id: int) -> tuple[str, dict]:
         # per-file previews (never the full workspace dump). The model pulls
         # full contents on demand via the read_named_file tool.
         ctx, total_chars = build_linked_folder_context(
-            linked_folders, conv_files, preview_only=True
+            linked_folders, conv_files, max_chars=max_chars or 100_000, preview_only=True
         )
         if ctx:
             return ctx, {
@@ -147,7 +153,7 @@ def build_conversation_context(conv: dict, conv_id: int) -> tuple[str, dict]:
         return "", {"scope": "none", "chars": 0, "warn": False}
 
     if conv_files:
-        ctx = build_file_context(conv_files)
+        ctx = build_file_context(conv_files, max_chars=max_chars or 100_000)
         if ctx:
             return ctx, {
                 "scope": "uploads",

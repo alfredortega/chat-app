@@ -247,6 +247,11 @@ class TokenUsage(db.Model):
     completion_tokens = db.Column(db.Integer, nullable=False, default=0)
     total_tokens = db.Column(db.Integer, nullable=False, default=0)
     estimated = db.Column(db.Integer, nullable=False, default=1)
+    model_id = db.Column(db.String(255), nullable=False, default='')
+    provider = db.Column(db.String(255), nullable=False, default='')
+    tool_schema_tokens = db.Column(db.Integer, nullable=False, default=0)
+    cached_prompt_tokens = db.Column(db.Integer, nullable=False, default=0)
+    cost_usd = db.Column(db.Float, nullable=False, default=0.0)
     created_at = db.Column(db.String(50), nullable=False)
 
     def to_dict(self):
@@ -257,6 +262,11 @@ class TokenUsage(db.Model):
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "estimated": bool(self.estimated),
+            "model_id": self.model_id,
+            "provider": self.provider,
+            "tool_schema_tokens": self.tool_schema_tokens,
+            "cached_prompt_tokens": self.cached_prompt_tokens,
+            "cost_usd": self.cost_usd,
             "created_at": self.created_at,
         }
 
@@ -750,6 +760,19 @@ def _ensure_token_usage_table():
     if "token_usage" not in inspector.get_table_names():
         TokenUsage.__table__.create(db.engine)
         db.session.commit()
+        return
+    columns = {column["name"] for column in inspector.get_columns("token_usage")}
+    additions = {
+        "model_id": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "provider": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "tool_schema_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "cached_prompt_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "cost_usd": "FLOAT NOT NULL DEFAULT 0",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            db.session.execute(text(f"ALTER TABLE token_usage ADD COLUMN {name} {definition}"))
+    db.session.commit()
 
 
 def _ensure_repair_watermark():
@@ -948,6 +971,11 @@ def record_token_usage(
     completion_tokens: int = 0,
     total_tokens: int = 0,
     estimated: bool = True,
+    model_id: str = "",
+    provider: str = "",
+    tool_schema_tokens: int = 0,
+    cached_prompt_tokens: int = 0,
+    cost_usd: float = 0.0,
 ) -> dict:
     """Persist one model call's token usage for a conversation."""
     tu = TokenUsage(
@@ -956,6 +984,11 @@ def record_token_usage(
         completion_tokens=int(completion_tokens or 0),
         total_tokens=int(total_tokens or 0),
         estimated=1 if estimated else 0,
+        model_id=model_id or "",
+        provider=provider or "",
+        tool_schema_tokens=int(tool_schema_tokens or 0),
+        cached_prompt_tokens=int(cached_prompt_tokens or 0),
+        cost_usd=float(cost_usd or 0),
         created_at=_now(),
     )
     db.session.add(tu)

@@ -33,6 +33,11 @@ def upgrade() -> None:
         sa.Column('completion_tokens', sa.Integer(), nullable=False),
         sa.Column('total_tokens', sa.Integer(), nullable=False),
         sa.Column('estimated', sa.Integer(), nullable=False),
+        sa.Column('model_id', sa.String(length=255), nullable=False, server_default=''),
+        sa.Column('provider', sa.String(length=255), nullable=False, server_default=''),
+        sa.Column('tool_schema_tokens', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('cached_prompt_tokens', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('cost_usd', sa.Float(), nullable=False, server_default='0'),
         sa.Column('created_at', sa.String(length=50), nullable=False),
         sa.PrimaryKeyConstraint('id'),
     )

@@ -36,6 +36,7 @@ PERSONA_CAP = 4_000
 # compact unified diffs, so a few thousand tokens is plenty and a runaway that
 # used to emit 100k+ tokens is bounded. Override with PROPAGATION_MAX_OUT_TOKENS.
 MAX_OUTPUT_TOKENS = int(os.getenv("PROPAGATION_MAX_OUT_TOKENS", "6000"))
+MAX_CONTEXT_TOKENS = int(os.getenv("PROPAGATION_MAX_CONTEXT_TOKENS", "64000"))
 
 # A propagation request runs in a background thread, so a provider that accepts
 # a stream but never sends a response would otherwise leave its job running
@@ -377,9 +378,17 @@ def run_propagation_wave(
 
         # Order jobs: depth ascending, artifact_key ascending.
         jobs_sorted = sorted(jobs, key=lambda j: (depths.get(j["artifact_key"], 0), j["artifact_key"]))
+        wave_tokens = 0
+        token_budget = project.get("token_budget", 0) or 0
 
         payloads: list[RewritePayload] = []
         for job in jobs_sorted:
+            if job.get("state") not in ("pending", "queued", "running"):
+                continue
+            if token_budget and wave_tokens >= token_budget:
+                from propagation.loop_guard import enforce_token_budget
+                enforce_token_budget(change_id, token_budget, wave_tokens)
+                break
             artifact_key = job["artifact_key"]
             # Surfaces per-agent progress: mark THIS job as the one currently
             # being worked and push previously finished jobs to a terminal
@@ -494,6 +503,14 @@ def run_propagation_wave(
                 return handler
 
             handler = make_tool_handler()
+            job_tokens = 0
+
+            def record_usage(usage: dict):
+                nonlocal job_tokens, wave_tokens
+                used = int(usage.get("total_tokens", 0) or 0)
+                job_tokens += used
+                wave_tokens += used
+                db_module.update_propagation_job(job["id"], tokens_used=job_tokens)
             # The configured OpenRouter DeepSeek model enables high-effort
             # reasoning by default. Propagation only needs a compact artifact
             # diff, and waiting for thousands of hidden reasoning tokens leaves
@@ -516,9 +533,14 @@ def run_propagation_wave(
                     execute_tool_fn=handler,
                     output_dir=workspace_dir,
                     max_output_tokens=MAX_OUTPUT_TOKENS,
+                    max_context_tokens=MAX_CONTEXT_TOKENS,
+                    record_usage_fn=record_usage,
                     request_timeout=REQUEST_TIMEOUT_SECONDS,
                     request_extra_body={"reasoning": {"enabled": False}} if openrouter_request else None,
                 )
+                if token_budget:
+                    from propagation.loop_guard import enforce_token_budget
+                    enforce_token_budget(change_id, token_budget, wave_tokens)
             except Exception as exc:
                 # One unavailable model response must not abort the whole wave.
                 # Record a terminal result for this agent and let later agents run.
