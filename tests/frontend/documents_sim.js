@@ -118,6 +118,7 @@ const listCalls = [];
 const readCalls = [];
 const saveCalls = [];
 const renameCalls = [];
+const exportCalls = [];
 const openDirCalls = [];
 let saveConflict = null;      // set to a conflict payload to force 409
 let saveResult = { success: true, content_hash: "sha256:new", modified_at: "2026-09-18T12:35:00Z", size_bytes: 24 };
@@ -134,7 +135,12 @@ global.API = {
   },
   async renameDocument(convId, docId, name) {
     renameCalls.push({ convId, docId, name });
-    return { success: true };
+    return { success: true, id: "output:renamed.md", name: "renamed.md" };
+  },
+  async exportDocument(convId, docId, format, content) {
+    exportCalls.push({ convId, docId, format, content });
+    const MT = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    return { ok: true, async blob() { return new Blob(["PK-docx"], { type: MT }); } };
   },
   async openOutputDir(convId) { openDirCalls.push(convId); return { ok: true }; },
 };
@@ -168,9 +174,9 @@ readDoc = Object.assign({ content: "# Report\n\nHello world\n" }, docs[0]);
   check("list renders name", listHtml.includes("report.md"), "missing report.md");
   check("list renders view", listHtml.includes("View"), "missing View action");
   check("list renders edit", listHtml.includes("Edit"), "missing Edit action");
-  check("list renders rename", listHtml.includes("Rename"), "missing Rename action");
   check("list renders download", listHtml.includes("Download"), "missing Download");
-  check("list renders refresh", listHtml.includes("Refresh"), "missing Refresh");
+  check("list omits rename", !listHtml.includes("Rename"), "Rename still shown in list");
+  check("list omits refresh", !listHtml.includes("Refresh"), "Refresh still shown in list");
   check("list has no delete (not approved)", !/Delete/i.test(listHtml), "Delete present");
 
   // 2 ── Edit action via list click
@@ -238,6 +244,17 @@ readDoc = Object.assign({ content: "# Report\n\nHello world\n" }, docs[0]);
   MD.copyLocal();
   check("copy writes local edit to clipboard", global.__copiedText === "# My local edit\n", "clipboard content wrong");
 
+  // 6b ── DOCX export posts current (unsaved) content and returns a payload
+  const exportBefore = exportCalls.length;
+  await MD.downloadDocx();
+  const expCall = exportCalls[exportCalls.length - 1];
+  check("docx export posts current content", exportCalls.length > exportBefore && expCall &&
+    expCall.format === "docx" && expCall.content === "# My local edit\n",
+    `docx export call wrong: ${JSON.stringify(expCall)}`);
+  check("docx download captured", global.__capturedDownload &&
+    global.__capturedDownload.blob.parts[0] && typeof global.__capturedDownload.blob.parts[0].parts !== "undefined",
+    "docx blob not captured for download");
+
   // 7 ── Cancel reverts edits (after confirming)
   await MD.cancel();
   check("cancel reverts to base", $("docEditorSource").value === MD._state.baseContent, "cancel did not revert");
@@ -266,12 +283,34 @@ readDoc = Object.assign({ content: "# Report\n\nHello world\n" }, docs[0]);
   MD.edit();
   check("edit restores split columns", !$("docEditorSplit").classList.contains("preview-only"),
     "preview-only class not removed on edit");
-  MD.toggleFullscreen();
-  check("fullscreen adds modal-fullscreen", $("documentEditorModal").classList.contains("modal-fullscreen"),
-    "modal-fullscreen not applied");
+
+  // 9c ── Explicit edit-only / split / preview modes
+  MD.editOnly();
+  check("edit-only adds edit-only class", $("docEditorSplit").classList.contains("edit-only"),
+    "edit-only class not applied");
+  check("edit-only hides preview pane", $("docEditorPreview").style.display === "none",
+    "preview pane not hidden in edit-only");
+  check("edit-only removes preview-only", !$("docEditorSplit").classList.contains("preview-only"),
+    "preview-only not removed in edit-only");
+  MD.splitView();
+  check("split removes preview-only and edit-only",
+    !$("docEditorSplit").classList.contains("preview-only") &&
+    !$("docEditorSplit").classList.contains("edit-only"),
+    "split view classes not reset");
+  check("split shows preview pane", $("docEditorPreview").style.display === "",
+    "preview pane not restored in split");
+  MD.preview();
+  check("preview re-applies preview-only", $("docEditorSplit").classList.contains("preview-only"),
+    "preview-only not re-applied");
+  check("opening a document defaults to full screen",
+    $("documentEditorModal").classList.contains("modal-fullscreen"),
+    "modal-fullscreen not applied on open");
   MD.toggleFullscreen();
   check("fullscreen toggle removes modal-fullscreen", !$("documentEditorModal").classList.contains("modal-fullscreen"),
     "modal-fullscreen not removed");
+  MD.toggleFullscreen();
+  check("fullscreen toggle re-adds modal-fullscreen", $("documentEditorModal").classList.contains("modal-fullscreen"),
+    "modal-fullscreen not re-added");
 
   // 10 ── Rename action routes through the API
   global.prompt = () => "renamed.md";
@@ -279,6 +318,9 @@ readDoc = Object.assign({ content: "# Report\n\nHello world\n" }, docs[0]);
   const renameCall = renameCalls[renameCalls.length - 1];
   check("rename sends doc id + new name", renameCall && renameCall.docId === "output:report.md" && renameCall.name === "renamed.md",
     `rename not recorded: ${JSON.stringify(renameCalls)}`);
+  check("rename updates open editor title",
+    $("docEditorTitle").textContent === "renamed.md" && MD._state.docId === "output:renamed.md",
+    "open editor not updated after rename");
   check("rename cancels on null prompt", (() => { global.prompt = () => null; const before = renameCalls.length; MD.renameDocument("output:report.md"); return renameCalls.length === before; })(),
     "null prompt still renamed");
 

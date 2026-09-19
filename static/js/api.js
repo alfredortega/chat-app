@@ -331,6 +331,22 @@ const API = {
     return res.json();
   },
 
+  /** Export a document. Pass ``content`` to export unsaved editor edits
+   *  (POST); otherwise the saved server version is exported (GET). Returns the
+   *  raw fetch Response so the caller can read the binary payload. */
+  async exportDocument(convId, docId, format, content) {
+    const url = `/api/conversations/${convId}/documents/${encodeURIComponent(docId)}/export?format=${encodeURIComponent(format)}`;
+    const body = content !== undefined && content !== null
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }
+      : { method: "GET" };
+    const res = await fetch(url, body);
+    if (!res.ok) {
+      let msg = ""; try { msg = await res.text(); } catch (_e) { /* ignore */ }
+      throw new Error(msg || `Export failed (${res.status}).`);
+    }
+    return res;
+  },
+
   // ── Import Markdown from the output folder ─────────────────────────────
 
   /** Browse inside the conversation's effective output directory (rel path). */

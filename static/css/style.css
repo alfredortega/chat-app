@@ -1011,6 +1011,10 @@ body {
 .doc-editor-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  /* Bound the row to the container so large documents scroll internally
+     (inside CodeMirror / the preview) instead of growing the modal and
+     pushing the toolbars off screen. */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -1053,10 +1057,25 @@ body {
   grid-template-columns: 1fr;
 }
 
+/* Hide the rendered preview in edit-only mode so the editor spans the full
+   column. */
+.doc-editor-split.edit-only .doc-editor-preview {
+  display: none !important;
+}
+
+/* Hide the source editor (EasyMDE container or raw textarea) in preview mode
+   so the rendered document gets the full column. Keeps the editor from being
+   left visible when the JS library doesn't expose the container element. */
+.doc-editor-split.preview-only .EasyMDEContainer,
+.doc-editor-split.preview-only .doc-editor-source {
+  display: none !important;
+}
+
 /* EasyMDE / CodeMirror fills the source column of the split */
 .doc-editor-split .EasyMDEContainer {
   width: 100%;
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1069,6 +1088,11 @@ body {
   border-left: 0;
   border-right: 0;
   border-top: 0;
+  /* Keep the formatting buttons on one line; scroll horizontally if the
+     editor column is too narrow instead of wrapping onto multiple rows. */
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
 .doc-editor-split .EasyMDEContainer .CodeMirror {
@@ -1108,7 +1132,8 @@ body {
   grid-template-columns: 1fr 1fr;
 }
 
-#documentEditorModal.modal-fullscreen .doc-editor-split.preview-only {
+#documentEditorModal.modal-fullscreen .doc-editor-split.preview-only,
+#documentEditorModal.modal-fullscreen .doc-editor-split.edit-only {
   grid-template-columns: 1fr;
 }
 

@@ -31,12 +31,16 @@ const MarkdownDocuments = {
 
     _docWire("btnDocumentsRefresh", () => this.refreshList());
     _docWire("btnDocumentsOpenFolder", () => this.openOutputFolder());
-    _docWire("btnDocEdit", () => this.edit());
+    _docWire("btnDocEditSource", () => this.editOnly());
+    _docWire("btnDocSplit", () => this.splitView());
     _docWire("btnDocPreview", () => this.preview());
     _docWire("btnDocSave", () => this.save());
     _docWire("btnDocCancel", () => this.cancel());
     _docWire("btnDocRefresh", () => this.refreshFromDisk());
     _docWire("btnDocDownload", () => this.download());
+    _docWire("btnDocDownloadDocx", () => this.downloadDocx());
+    _docWire("btnDocPrint", () => this.printDocument());
+    _docWire("btnDocRename", () => this.renameDocument());
     _docWire("btnDocFullscreen", () => this.toggleFullscreen());
     _docWire("btnDocEditorClose", () => this.closeEditor());
     _docWire("btnDocConflictReload", () => this.reloadServerVersion());
@@ -138,9 +142,7 @@ const MarkdownDocuments = {
         <div class="doc-row-actions">
           <button class="btn btn-sm btn-outline-secondary py-0 px-2" data-doc-action="view" title="View">View</button>
           ${editBtn}
-          <button class="btn btn-sm btn-outline-secondary py-0 px-2" data-doc-action="rename" title="Rename">Rename</button>
           <button class="btn btn-sm btn-outline-secondary py-0 px-2" data-doc-action="download" title="Download">Download</button>
-          <button class="btn btn-sm btn-outline-secondary py-0 px-2" data-doc-action="refresh" title="Refresh list">Refresh</button>
         </div>
       </div>`;
   },
@@ -155,14 +157,19 @@ const MarkdownDocuments = {
     if (!docId) return;
     if (action === "view") await this.openDocument(docId, false);
     else if (action === "edit") await this.openDocument(docId, true);
-    else if (action === "rename") await this.renameDocument(docId);
     else if (action === "download") await this.downloadDoc(docId);
-    else if (action === "refresh") await this.refreshList();
   },
 
-  /** Rename a document (server jail-checks output paths). */
+  /** Rename the currently open document (or the given doc id). The server
+   *  jail-checks output paths; upload records keep their uuid disk name. */
   async renameDocument(docId) {
-    const current = (this._docs.find((d) => d.id === docId) || {}).name || "";
+    const convId = this._convId || (typeof App !== "undefined" ? App.activeConvId : null);
+    if (!convId) return;
+    const currentId = docId || (this._state ? this._state.docId : null);
+    if (!currentId) return;
+    const current = this._state && this._state.docId === currentId
+      ? this._state.name
+      : (this._docs.find((d) => d.id === currentId) || {}).name || "";
     let newName;
     if (typeof prompt === "function") {
       newName = prompt(`Rename "${current}" to (Markdown only):`, current);
@@ -172,11 +179,17 @@ const MarkdownDocuments = {
     if (newName === null || newName === undefined) return;
     newName = String(newName).trim();
     if (!newName || newName === current) return;
-    const convId = this._convId || (typeof App !== "undefined" ? App.activeConvId : null);
-    if (!convId) return;
     try {
-      const res = await API.renameDocument(convId, docId, newName);
-      if (res && res.success) await this.refreshList();
+      const res = await API.renameDocument(convId, currentId, newName);
+      if (!res || !res.success) return;
+      // Keep an open editor in sync so later saves target the new name.
+      if (this._state && this._state.docId === currentId) {
+        this._state.docId = res.id || this._state.docId;
+        this._state.name = res.name || newName;
+        const title = _docEl("docEditorTitle");
+        if (title) title.textContent = res.name || newName;
+      }
+      await this.refreshList();
     } catch (err) {
       if (typeof alert !== "undefined") alert(`Rename failed: ${err.message}`);
     }
@@ -211,7 +224,7 @@ const MarkdownDocuments = {
       conflictHash: null,
       conflictContent: null,
       dirty: false,
-      mode: startEditing ? "edit" : "preview",
+      mode: startEditing ? "source" : "preview",
       managed: !!doc.managed_artifact,
     };
 
@@ -228,6 +241,9 @@ const MarkdownDocuments = {
     this._setMode(this._state.mode);
 
     if (this._editorModal === null) this._editorModal = this._modal("documentEditorModal");
+    // Always open in full screen (View and Edit modes), so large documents
+    // get the maximum reading/editing area by default.
+    this.toggleFullscreen(true);
     if (this._editorModal) this._editorModal.show();
     if (this._mde) {
       setTimeout(() => { try { this._mde.codemirror.refresh(); } catch (_e) {} }, 80);
@@ -321,11 +337,12 @@ const MarkdownDocuments = {
     if (src) { try { src.focus(); } catch (_e) {} }
   },
 
-  /** Toggle full screen (the split editor keeps working inside the modal). */
-  toggleFullscreen() {
+  /** Toggle full screen (the split editor keeps working inside the modal).
+ *  Pass `force` to set the state explicitly instead of flipping it. */
+  toggleFullscreen(force) {
     const modal = _docEl("documentEditorModal");
     if (!modal) return;
-    this._fullscreen = !this._fullscreen;
+    this._fullscreen = force === undefined ? !this._fullscreen : !!force;
     modal.classList.toggle("modal-fullscreen", this._fullscreen);
     const btn = _docEl("btnDocFullscreen");
     if (btn) {
@@ -339,11 +356,29 @@ const MarkdownDocuments = {
 
   // ── Mode toggling ────────────────────────────────────────────────────────
 
-  edit() {
+  editOnly() {
+    if (!this._state) return;
+    this._state.mode = "source";
+    this._setMode("source");
+    setTimeout(() => {
+      this._focusEditor();
+      // Re-measure CodeMirror now that the container is visible. Without this,
+      // switching straight from Preview-only to Edit-only shows a blank editor
+      // because the editor was created (and first sized) while hidden.
+      if (this._mde) { try { this._mde.codemirror.refresh(); } catch (_e) {} }
+    }, 50);
+  },
+
+  splitView() {
     if (!this._state) return;
     this._state.mode = "edit";
     this._setMode("edit");
-    setTimeout(() => this._focusEditor(), 50);
+    setTimeout(() => {
+      this._focusEditor();
+      // Re-measure after the container was hidden/shown so CodeMirror keeps
+      // its scroll area sized to the split pane.
+      if (this._mde) { try { this._mde.codemirror.refresh(); } catch (_e) {} }
+    }, 50);
   },
 
   preview() {
@@ -352,18 +387,55 @@ const MarkdownDocuments = {
     this._setMode("preview");
   },
 
+  /** Backwards-compatible alias: "edit" means the split view. */
+  edit() {
+    return this.splitView();
+  },
+
   _setMode(mode) {
     const split = _docEl("docEditorSplit");
-    if (split) split.classList.toggle("preview-only", mode !== "edit");
-    // Hide the source editor (EasyMDE container or textarea) in preview mode
-    // so the rendered document gets the full width.
-    if (this._mde) {
-      try { this._mde.container.style.display = mode === "edit" ? "" : "none"; } catch (_e) {}
-    } else {
-      const source = _docEl("docEditorSource");
-      if (source && !this._mde) source.style.display = mode === "edit" ? "" : "none";
+    const isPreview = mode === "preview";
+    const isEditOnly = mode === "source";
+    if (split) {
+      split.classList.toggle("preview-only", isPreview);
+      split.classList.toggle("edit-only", isEditOnly);
     }
+    // Hide the source editor (EasyMDE container or textarea) in preview mode.
+    if (isPreview) {
+      const c = this._getMdeContainer();
+      if (c) {
+        c.style.display = "none";
+      } else {
+        const source = _docEl("docEditorSource");
+        if (source) source.style.display = "none";
+      }
+    } else {
+      const c = this._getMdeContainer();
+      if (c) {
+        c.style.display = "";
+      } else {
+        const source = _docEl("docEditorSource");
+        if (source) source.style.display = "";
+      }
+    }
+    // Hide the rendered preview in edit-only mode.
+    const preview = _docEl("docEditorPreview");
+    if (preview) preview.style.display = isEditOnly ? "none" : "";
     this._renderPreview(this._state ? this._state.currentContent : "");
+  },
+
+  /** Locate the EasyMDE wrapper element across library versions. EasyMDE does
+   *  not reliably expose a `.container` property, so climb from the CodeMirror
+   *  wrapper to the surrounding `.EasyMDEContainer` (toolbar + editor + status). */
+  _getMdeContainer() {
+    try {
+      if (this._mde && this._mde.codemirror && typeof this._mde.codemirror.getWrapperElement === "function") {
+        const w = this._mde.codemirror.getWrapperElement();
+        if (w && w.parentElement) return w.parentElement;
+      }
+      if (this._mde && this._mde.container) return this._mde.container;
+    } catch (_e) { /* fall through */ }
+    return null;
   },
 
   // ── Rendering ────────────────────────────────────────────────────────────
@@ -511,8 +583,66 @@ const MarkdownDocuments = {
     this._downloadContent(name, content);
   },
 
-  _downloadContent(name, content) {
-    const blob = new Blob([content || ""], { type: "text/markdown" });
+  /** Open a clean print window with the rendered document so the user can
+   *  save it as a PDF via the browser print dialog. */
+  printDocument() {
+    const s = this._state;
+    if (!s) return;
+    const preview = _docEl("docEditorPreview");
+    const body = preview && preview.innerHTML
+      ? preview.innerHTML
+      : `<pre>${_docEsc(s.currentContent || "")}</pre>`;
+    const base = String(s.name || "document.md").replace(/\.(md|markdown)$/i, "") || "document";
+    const title = `${base}.pdf`;
+    const w = window.open("", "_blank", "width=980,height=760");
+    if (!w) {
+      if (typeof alert === "function") alert("Please allow pop-ups to print the document.");
+      return;
+    }
+    w.document.write(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${_docEsc(title)}</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;color:#1a1a1a;max-width:50rem;margin:2rem auto;padding:0 1.5rem;}
+  h1,h2,h3,h4,h5,h6{margin:1.4em 0 .5em;line-height:1.25;}
+  pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:.85em;background:#f4f4f4;border-radius:3px;padding:.1em .3em;}
+  pre{padding:.75em 1em;overflow-x:auto;}
+  pre code{background:transparent;padding:0;}
+  img{max-width:100%;}
+  table{border-collapse:collapse;margin:1em 0;}
+  th,td{border:1px solid #b9b9b9;padding:.4em .7em;text-align:left;}
+  th{background:#f0f0f0;}
+  blockquote{border-left:3px solid #ccc;margin:1em 0;padding-left:1em;color:#555;}
+  a{color:#0645ad;}
+  hr{border:0;border-top:1px solid #999;margin:1.5em 0;}
+</style>
+</head><body>${body}</body></html>`);
+    w.document.close();
+    const finish = () => {
+      try { w.focus(); w.print(); } catch (_e) { /* window already closed */ }
+    };
+    setTimeout(finish, 150);
+  },
+
+  /** Export the current document as a .docx via the server. */
+  async downloadDocx() {
+    const s = this._state;
+    if (!s || !s.docId) return;
+    const convId = this._convId || (typeof App !== "undefined" ? App.activeConvId : null);
+    if (!convId) return;
+    try {
+      const res = await API.exportDocument(convId, s.docId, "docx", s.currentContent);
+      const blob = await res.blob();
+      const base = String(s.name || "document.md").replace(/\.(md|markdown)$/i, "") || "document";
+      this._downloadContent(`${base}.docx`, blob, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    } catch (err) {
+      if (typeof alert !== "undefined") alert(`DOCX export failed: ${err.message}`);
+    }
+  },
+
+  _downloadContent(name, content, type) {
+    const blob = new Blob([content || ""], { type: type || "text/markdown" });
     try {
       if (window.navigator && window.navigator.msSaveBlob) {
         window.navigator.msSaveBlob(blob, name);

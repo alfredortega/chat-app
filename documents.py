@@ -722,3 +722,212 @@ def update_document(
         resp["managed_artifact"] = True
         resp["project_id"] = managed["project_id"]
     return resp
+
+
+# ── Export: Markdown → DOCX ──────────────────────────────────────────────────
+
+import re  # noqa: E402
+from io import BytesIO  # noqa: E402
+
+_INLINE_TOKEN = re.compile(
+    r"(\*\*[^*\n]+\*\*|~~[^~\n]+~~|`[^`\n]+`|\*[^*\s][^*\n]*\*|_[^_\s][^_\n]*_|\[[^\]]*?\]\([^)\s]+(?:\s+\"[^\"]*\")?\))"
+)
+
+_CODE_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}.*\|")
+
+
+def _add_inline_runs(par, text):
+    """Split ``text`` into styled runs (bold/italic/code/strike/links)."""
+    from docx.shared import Pt, RGBColor
+
+    pos = 0
+    for m in _INLINE_TOKEN.finditer(text or ""):
+        if m.start() > pos:
+            par.add_run(text[pos:m.start()])
+        tok = m.group(1)
+        if tok.startswith("**"):
+            run = par.add_run(tok[2:-2])
+            run.font.bold = True
+        elif tok.startswith("~~"):
+            run = par.add_run(tok[2:-2])
+            run.font.strike = True
+        elif tok.startswith("`"):
+            run = par.add_run(tok[1:-1])
+            run.font.name = "Consolas"
+            run.font.size = Pt(9)
+        elif tok.startswith("["):
+            inner = tok[1:]
+            text_part, _, rest = inner.partition("](")
+            run = par.add_run(text_part)
+            run.font.color.rgb = RGBColor(0x2B, 0x59, 0xA0)
+            run.font.underline = True
+            par.add_run(" (")
+            run = par.add_run(rest.rstrip(")"))
+            run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+            par.add_run(")")
+        else:  # *emphasis* or _emphasis_
+            run = par.add_run(tok[1:-1])
+            run.font.italic = True
+        pos = m.end()
+    if pos < len(text or ""):
+        par.add_run(text[pos:])
+
+
+def _is_markdown_table_sep(line):
+    return bool(_TABLE_SEP_RE.match(line))
+
+
+def markdown_to_docx(content):
+    """Convert Markdown text into a ``python-docx`` ``Document``.
+
+    Handles headings, fenced code blocks, blockquotes, bullet/numbered lists,
+    Markdown tables, horizontal rules, inline emphasis, links and images.
+    Images are rendered as their alt text; remote downloads are intentionally
+    skipped.
+    """
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    doc = Document()
+    styles = doc.styles
+    styles.add_style("CodeBlock", WD_STYLE_TYPE.PARAGRAPH)
+    styles["CodeBlock"].font.name = "Consolas"
+    styles["CodeBlock"].font.size = Pt(9)
+
+    lines = (content or "").splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        raw = lines[i]
+        line = raw.strip()
+        stripped = raw.strip(" \t")
+
+        # Fenced code block
+        m = _CODE_BLOCK_RE.match(line)
+        if m:
+            i += 1
+            buf = []
+            while i < n and not _CODE_BLOCK_RE.match(lines[i].strip()):
+                buf.append(lines[i])
+                i += 1
+            i += 1  # skip closing fence
+            par = doc.add_paragraph(style="CodeBlock")
+            par.add_run("\n".join(buf))
+            continue
+
+        # Horizontal rule
+        if stripped in ("---", "***", "___"):
+            par = doc.add_paragraph()
+            pPr = par._p.get_or_add_pPr()
+            pBdr = OxmlElement("w:pBdr")
+            bottom = OxmlElement("w:bottom")
+            bottom.set(qn("w:val"), "single")
+            bottom.set(qn("w:sz"), "6")
+            bottom.set(qn("w:color"), "999999")
+            pBdr.append(bottom)
+            pPr.append(pBdr)
+            i += 1
+            continue
+
+        # Blockquote (one or more consecutive > lines merged with spacing)
+        if stripped.startswith(">"):
+            buf = []
+            while i < n and lines[i].strip().startswith(">"):
+                buf.append(lines[i].strip().lstrip(">").strip())
+                i += 1
+            par = doc.add_paragraph()
+            par.paragraph_format.left_indent = Pt(18)
+            par.paragraph_format.space_before = Pt(4)
+            par.paragraph_format.space_after = Pt(4)
+            run = par.add_run("\n".join(buf))
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+            continue
+
+        # Heading
+        h = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if h:
+            level = len(h.group(1))
+            text = _strip_image_wrapper(h.group(2))
+            par = doc.add_heading(level=level)
+            _add_inline_runs(par, text)
+            i += 1
+            continue
+
+        # Table (consecutive | rows, skipping align separator)
+        if line.startswith("|"):
+            rows = []
+            while i < n:
+                r = lines[i].strip()
+                if not r.startswith("|"):
+                    break
+                cells = [c.strip() for c in r.strip().strip("|").split("|")]
+                if not _is_markdown_table_sep(r):
+                    rows.append(cells)
+                i += 1
+            if rows:
+                cols = max(len(r) for r in rows)
+                table = doc.add_table(rows=len(rows), cols=cols)
+                table.style = "Table Grid"
+                for r_idx, cells in enumerate(rows):
+                    for c_idx in range(cols):
+                        text = cells[c_idx] if c_idx < len(cells) else ""
+                        cell_par = table.cell(r_idx, c_idx).paragraphs[0]
+                        _add_inline_runs(cell_par, text)
+                doc.add_paragraph()
+            continue
+
+        # Image: ![alt](url) on its own line -> italic alt text
+        img = re.match(r"^!\[([^\]]*)\]\([^)]*\)$", line)
+        if img:
+            par = doc.add_paragraph()
+            run = par.add_run(f"[Image: {img.group(1) or 'no caption'}]")
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
+            i += 1
+            continue
+
+        # Bullet list
+        bl = re.match(r"^([-*+])\s+(.*)$", line)
+        if bl:
+            text = _strip_image_wrapper(bl.group(2))
+            par = doc.add_paragraph(style="List Bullet")
+            _add_inline_runs(par, text)
+            i += 1
+            continue
+
+        # Numbered list
+        nl = re.match(r"^(\d+)[.)]\s+(.*)$", line)
+        if nl:
+            text = _strip_image_wrapper(nl.group(2))
+            par = doc.add_paragraph(style="List Number")
+            _add_inline_runs(par, text)
+            i += 1
+            continue
+
+        # Plain paragraph
+        text = _strip_image_wrapper(line)
+        if text:
+            par = doc.add_paragraph()
+            _add_inline_runs(par, text)
+        i += 1
+
+    return doc
+
+
+def _strip_image_wrapper(text):
+    """Replace a leading ``![alt](url)`` inline image with its alt text."""
+    return re.sub(r"^!\[([^\]]*)\]\([^)]*\)", r"\1", text or "").strip()
+
+
+def export_document_docx(content):
+    """Return the Markdown ``content`` as a ``.docx`` bytes payload."""
+    doc = markdown_to_docx(content)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

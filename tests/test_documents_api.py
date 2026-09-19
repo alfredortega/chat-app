@@ -752,5 +752,60 @@ class TestRecentEditNote:
         assert "read_named_file" in note
 
 
+class TestDocxExport:
+    DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    def _reopen(self, payload):
+        from docx import Document as DocxDocument
+        from io import BytesIO
+        return DocxDocument(BytesIO(payload))
+
+    def test_export_output_document_docx(self, ctx):
+        _write_output(ctx, "report.md", "# Hello\n\nThis is **bold** text.\n")
+        app = ctx.app
+        with app.test_client() as client:
+            resp = client.get(
+                f"/api/conversations/{ctx.conv_id}/documents/output:report.md/export?format=docx"
+            )
+        assert resp.status_code == 200
+        assert resp.mimetype == self.DOCX_MIME
+        assert "filename=\"report.docx\"" in resp.headers.get("Content-Disposition", "")
+        payload = resp.data
+        assert payload[:2] == b"PK"  # ZIP/DOCX magic
+        doc = self._reopen(payload)
+        texts = [p.text for p in doc.paragraphs]
+        assert any(t == "Hello" for t in texts)
+        assert any("bold" in t for t in texts)
+
+    def test_export_posts_local_content(self, ctx):
+        _write_output(ctx, "report.md", "# Server version\n")
+        app = ctx.app
+        with app.test_client() as client:
+            resp = client.post(
+                f"/api/conversations/{ctx.conv_id}/documents/output:report.md/export?format=docx",
+                json={"content": "## Edited locally\n", "name": "report.md"},
+            )
+        assert resp.status_code == 200
+        doc = self._reopen(resp.data)
+        assert any(p.text.strip() == "Edited locally" for p in doc.paragraphs)
+
+    def test_export_rejects_unknown_format(self, ctx):
+        _write_output(ctx, "report.md", "# Hi")
+        app = ctx.app
+        with app.test_client() as client:
+            resp = client.get(
+                f"/api/conversations/{ctx.conv_id}/documents/output:report.md/export?format=pdf"
+            )
+        assert resp.status_code == 400
+
+    def test_export_bad_document_id(self, ctx):
+        app = ctx.app
+        with app.test_client() as client:
+            resp = client.get(
+                f"/api/conversations/{ctx.conv_id}/documents/output:../../etc/export?format=docx"
+            )
+        assert resp.status_code in (400, 404)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

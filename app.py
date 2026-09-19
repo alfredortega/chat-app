@@ -48,6 +48,7 @@ from documents import (
     effective_output_dir,
     resolve_output_path_for,
     is_markdown_name,
+    export_document_docx,
     MAX_EDITABLE_BYTES,
 )
 
@@ -1070,6 +1071,48 @@ def rename_document_route(conv_id, document_id):
         return jsonify(result), 200
     except DocumentError as exc:
         return jsonify(exc.payload), exc.status
+
+
+@legacy_bp.route("/api/conversations/<int:conv_id>/documents/<path:document_id>/export", methods=["GET", "POST"])
+def export_document_route(conv_id, document_id):
+    """Export a Markdown document.
+
+    GET  -> exports the saved server version.
+    POST -> exports an explicit ``{ "content": ... }`` payload, so unsaved
+            editor edits are reflected.
+    Only ``format=docx`` is supported.
+    """
+    if not db.get_conversation(conv_id):
+        return jsonify({"error": "Not found"}), 404
+    if not _valid_document_id(document_id):
+        return jsonify({"error": "invalid_document_id", "message": "Malformed document identifier."}), 400
+
+    fmt = request.args.get("format", "docx")
+    if fmt != "docx":
+        return jsonify({"error": "unsupported_format", "message": f"Unsupported export format: {fmt}."}), 400
+
+    data = request.get_json(silent=True) or {}
+    content = data.get("content") if isinstance(data.get("content"), str) else None
+    if content is None:
+        try:
+            doc = read_document_service(conv_id, document_id)
+        except DocumentError as exc:
+            return jsonify(exc.payload), exc.status
+        content = doc["content"]
+        name = doc["name"]
+    else:
+        name = data.get("name") or "document.md"
+
+    base = os.path.splitext(os.path.basename(name))[0] or "document"
+    try:
+        payload = export_document_docx(content)
+    except DocumentError as exc:
+        return jsonify(exc.payload), exc.status
+    return Response(
+        payload,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{base}.docx"'},
+    )
 
 
 # ── Import Markdown from the output folder ───────────────────────────────────
