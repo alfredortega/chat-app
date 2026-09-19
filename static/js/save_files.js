@@ -122,7 +122,7 @@ const SaveFiles = {
           body: JSON.stringify({
             path: item.path,
             content: item.content,
-            conversation_id: localAccess ? undefined : convId,
+            conversation_id: convId,
           }),
         });
         const data = await res.json();

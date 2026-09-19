@@ -1492,15 +1492,15 @@ const App = {
       .slice(0, 60) || "conversation";
     const filename = `${safeName}_${datePart}.md`;
 
-    if (this.outputDir) {
-      // Write to the configured output directory via the server
+    if (this.convOutputDir || this.outputDir) {
+      // Write to the effective output directory via the server
       const effectiveDir = this.convOutputDir || this.outputDir;
       const path = effectiveDir.replace(/[\\/]$/, "") + "/" + filename;
       try {
         const res = await fetch("/api/write_file", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path, content: md }),
+          body: JSON.stringify({ path, content: md, conversation_id: this.activeConvId }),
         });
         const data = await res.json();
         Chat.appendToolNotification(data.success, data.display);

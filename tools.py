@@ -764,6 +764,8 @@ def _write_file(args: dict, output_dir: str = None) -> dict:
 
     # Determine the effective output directory (conversation override → app default).
     effective_dir = (output_dir or db.get_setting("output_dir") or "").strip()
+    if effective_dir:
+        effective_dir = os.path.abspath(os.path.expanduser(effective_dir))
 
     if not os.path.isabs(path):
         # Relative path: place it under the effective directory, using only the basename
@@ -781,10 +783,11 @@ def _write_file(args: dict, output_dir: str = None) -> dict:
                     "result": "No output directory configured; absolute writes are denied.",
                     "display": "❌ No output directory configured for absolute path."}
         norm_effective = os.path.normpath(effective_dir)
-        if not (path.startswith(norm_effective + os.sep) or path == norm_effective):
+        norm_path = os.path.normpath(path)
+        if not (norm_path == norm_effective or norm_path.startswith(norm_effective + os.sep)):
             return {"success": False, "result": "Absolute path is outside the allowed output directory.",
                     "display": "❌ Path traversal denied: absolute path must be under the output directory."}
-        path = os.path.normpath(path)
+        path = norm_path
 
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

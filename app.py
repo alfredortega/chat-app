@@ -1723,10 +1723,26 @@ def write_file_direct():
             return jsonify({"success": False, "display": f"❌ Failed to save file: {exc}",
                             "result": f"Failed to save file: {exc}"}), 500
 
-    if not (db.get_setting("output_dir") or "").strip():
+    # Resolve the effective output directory (conversation override → app
+    # default), mirroring the chat loop, so writes to a conversation-specific
+    # folder pass the write_file jail check instead of being rejected against
+    # the app default alone.
+    effective_dir = db.get_setting("output_dir") or ""
+    conv_id = data.get("conversation_id")
+    if conv_id is not None:
+        try:
+            conv_id = int(conv_id)
+        except (TypeError, ValueError):
+            conv_id = None
+        if conv_id is not None:
+            conv = db.get_conversation(conv_id)
+            if conv and (conv.get("output_dir") or "").strip():
+                effective_dir = conv["output_dir"].strip()
+    if not effective_dir.strip():
         return jsonify({"success": False, "display": "No output directory configured",
                         "result": "No output directory configured"}), 400
-    result = execute_tool_call("write_file", json.dumps({"path": path, "content": content}))
+    result = execute_tool_call(
+        "write_file", json.dumps({"path": path, "content": content}), output_dir=effective_dir)
     return jsonify(result)
 
 
