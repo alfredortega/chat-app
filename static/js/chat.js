@@ -36,6 +36,14 @@ function parseMarkdown(md) {
   return result;
 }
 
+/** Remove provider control syntax that was emitted as visible assistant text. */
+function assistantDisplayMarkdown(markdown) {
+  return String(markdown || "").replace(
+    /<\uFF5CDSML\uFF5C\s*calls>[\s\S]*?(?:<\/\uFF5CDSML\uFF5C\s*calls>|$)/gi,
+    ""
+  ).trimEnd();
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -91,10 +99,11 @@ const Chat = {
           this.appendAssistantMessage(msg.content);
         }
         // Render tool notifications
-        toolResults.forEach((tr) => {
-          const content = tr.content || "";
-          const success = !content.startsWith("Failed") && !content.startsWith("Invalid") && !content.startsWith("Unknown") && !content.startsWith("No file");
-          this.appendToolNotification(success, content);
+        let toolCalls = [];
+        try { toolCalls = JSON.parse(msg.tool_calls_json) || []; } catch (_) {}
+        toolResults.forEach((tr, index) => {
+          const notification = this._historicalToolNotification(toolCalls[index], tr.content);
+          this.appendToolNotification(notification.success, notification.display);
         });
         i = j;
         continue;
@@ -136,8 +145,9 @@ const Chat = {
     const el = document.createElement("div");
     el.className = "message-bubble message-assistant";
     if (msgId) el.dataset.msgId = msgId;
-    const html = parseMarkdown(markdown || "");
-    el.innerHTML = (typeof html === "string") ? html : (markdown || "");
+    const displayMarkdown = assistantDisplayMarkdown(markdown);
+    const html = parseMarkdown(displayMarkdown);
+    el.innerHTML = (typeof html === "string") ? html : displayMarkdown;
 
     // Add copy buttons to all code blocks
     Chat._addCopyButtons(el);
@@ -183,8 +193,9 @@ const Chat = {
     let pendingTimer = null;
 
     const render = () => {
-      const html = parseMarkdown(raw);
-      el.innerHTML = (typeof html === "string") ? html : raw;
+      const displayMarkdown = assistantDisplayMarkdown(raw);
+      const html = parseMarkdown(displayMarkdown);
+      el.innerHTML = (typeof html === "string") ? html : displayMarkdown;
       lastRender = Date.now();
     };
     const flush = () => {
@@ -269,9 +280,16 @@ const Chat = {
     const pill = document.createElement("span");
     pill.className = `tool-notification ${success ? "success" : "error"}`;
 
-    // Parse the display text for markdown backtick paths
-    const html = String(displayText || "").replace(/`([^`]+)`/g, "<code>$1</code>");
-    pill.innerHTML = html;
+    // Support backtick paths without treating tool output as trusted HTML.
+    String(displayText || "").split(/(`[^`]+`)/g).forEach((part) => {
+      if (part.startsWith("`") && part.endsWith("`")) {
+        const code = document.createElement("code");
+        code.textContent = part.slice(1, -1);
+        pill.appendChild(code);
+      } else {
+        pill.appendChild(document.createTextNode(part));
+      }
+    });
 
     wrapper.appendChild(pill);
     if (blockedUrl) {
@@ -289,6 +307,40 @@ const Chat = {
     this.messagesArea.appendChild(wrapper);
     this.scrollToBottom();
     return wrapper;
+  },
+
+  /** Rebuild the short status shown live from a persisted tool result. */
+  _historicalToolNotification(toolCall, resultContent) {
+    const content = String(resultContent || "");
+    const failed = /^(Failed|Invalid|Unknown|No file|Script exited|Execution timed out|Path not found|Permission denied)/i.test(content);
+    const fn = toolCall && toolCall.function ? toolCall.function : {};
+    let args = {};
+    try { args = JSON.parse(fn.arguments || "{}"); } catch (_) {}
+
+    if (failed) {
+      const firstLine = content.split("\n", 1)[0];
+      return { success: false, display: firstLine.slice(0, 500) || `Tool failed: ${fn.name || "unknown"}` };
+    }
+
+    const value = (key) => String(args[key] || "");
+    switch (fn.name) {
+      case "read_named_file":
+        return { success: true, display: `Read file: \`${value("name")}\`` };
+      case "read_file":
+        return { success: true, display: `Read file: \`${value("path")}\`` };
+      case "list_directory":
+        return { success: true, display: `Listed directory: \`${value("path")}\`` };
+      case "write_file": {
+        const writtenPath = content.match(/^File written to:\s*(.+)$/m);
+        return { success: true, display: `File saved: \`${writtenPath ? writtenPath[1] : value("path")}\`` };
+      }
+      case "run_python":
+        return { success: true, display: "Python executed successfully" };
+      case "fetch_webpage":
+        return { success: true, display: `Fetched research source: \`${value("url")}\`` };
+      default:
+        return { success: true, display: `Tool completed: ${fn.name || "unknown"}` };
+    }
   },
 
   scrollToBottom() {

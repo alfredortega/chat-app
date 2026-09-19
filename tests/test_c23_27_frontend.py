@@ -237,6 +237,15 @@ class TestMarkdownDocumentPanel:
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
         assert "All markdown-import browser checks passed." in result.stdout
 
+    def test_chat_sim_harness_passes(self):
+        """Run the node simulation for persisted chat rendering."""
+        sim = os.path.join(ROOT, "tests", "frontend", "chat_sim.js")
+        result = subprocess.run(
+            ["node", sim], capture_output=True, text=True, cwd=ROOT,
+        )
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+        assert "All chat rendering checks passed." in result.stdout
+
     def test_api_has_import_methods(self):
         path = os.path.join(ROOT, "static", "js", "api.js")
         with open(path) as f:

@@ -248,7 +248,13 @@ const App = {
     document.getElementById("endpointUrlInput").addEventListener("blur", reloadEpModels);
     document.getElementById("endpointKeyInput").addEventListener("blur", reloadEpModels);
     document.getElementById("endpointModelFilterInput").addEventListener("input", () => {
-      this._fillEndpointModelSelect(this._loadedEndpointModelsList || []);
+      // Only re-filter once the model list has actually been loaded. While the
+      // list is still being fetched (or the fetch failed) `_loadedEndpointModelsList`
+      // is empty, and re-rendering from it would blank the dropdown and replace the
+      // real "loading"/"error" status with a misleading "no models matched" message.
+      if (this._loadedEndpointModelsList.length > 0) {
+        this._fillEndpointModelSelect(this._loadedEndpointModelsList);
+      }
     });
 
     // Load the optional model probe separately so an unavailable provider does
@@ -767,6 +773,15 @@ const App = {
   _fillEndpointModelSelect(models) {
     const modelSel = document.getElementById("endpointModelSelect");
     const status   = document.getElementById("endpointModelStatus");
+
+    // If the provider returned no models at all the filter is irrelevant;
+    // surface that clearly instead of blaming the filter text.
+    if (!models.length) {
+      modelSel.innerHTML = '<option value="">— Select a default model —</option>';
+      status.textContent = "No models were returned. Check the URL and API key.";
+      return;
+    }
+
     const filterText = document.getElementById("endpointModelFilterInput").value.trim().toLowerCase();
 
     // Filter the models based on the model filter textbox value
