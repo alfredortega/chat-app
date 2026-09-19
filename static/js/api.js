@@ -635,4 +635,28 @@ const API = {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
+
+  // ── Model tests ─────────────────────────────────────────────────────────
+
+  /** Send one prompt to every selected model on the given endpoint (or the
+   *  app/default endpoint when null). Resolves to { results: [...] }. */
+  async runModelTest(endpointId, models, prompt) {
+    const res = await fetch("/api/model-tests/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint_id: endpointId || null, models, prompt }),
+    });
+    if (!res.ok) {
+      let msg = ""; try { msg = await res.text(); } catch (_e) { /* ignore */ }
+      throw new Error(msg || `Model test failed (${res.status}).`);
+    }
+    return res.json();
+  },
+
+  /** Fetch a saved test-result file as a document object for the editor. */
+  async getModelTestFile(filename) {
+    const res = await fetch(`/api/model-tests/files/${encodeURIComponent(filename)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
 };

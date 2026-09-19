@@ -62,6 +62,7 @@ const App = {
     FolderBrowser.init();
     if (typeof MarkdownDocuments !== "undefined") MarkdownDocuments.init();
     if (typeof ImportMarkdown !== "undefined") ImportMarkdown.init();
+    if (typeof ModelTests !== "undefined") ModelTests.init();
 
     // Draggable sidebar width
     this._initSidebarResizer();

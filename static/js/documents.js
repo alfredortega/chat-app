@@ -233,6 +233,14 @@ const MarkdownDocuments = {
     const badge = _docEl("docEditorManagedBadge");
     if (badge) badge.classList.toggle("d-none", !doc.managed_artifact);
 
+    // Read-only documents (e.g. saved model-test results) hide the actions
+    // that persist changes back to the server.
+    const canEdit = doc.editable !== false;
+    const saveBtn = _docEl("btnDocSave");
+    if (saveBtn) saveBtn.classList.toggle("d-none", !canEdit);
+    const renameBtn = _docEl("btnDocRename");
+    if (renameBtn) renameBtn.classList.toggle("d-none", !canEdit);
+
     this._setSource(doc.content);
     this._renderPreview(doc.content);
     this._hideConflict();

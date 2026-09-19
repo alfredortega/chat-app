@@ -62,6 +62,10 @@
       <button class="btn btn-sm btn-outline-secondary" id="btnSettings" title="Settings">
         <i class="bi bi-gear"></i>
       </button>
+      <!-- Model Test button -->
+      <button class="btn btn-sm btn-outline-secondary" id="btnModelTest" title="Model tests (send a prompt to several models)">
+        <i class="bi bi-clipboard2-check"></i>
+      </button>
     </div>
   </nav>
 
@@ -417,6 +421,53 @@
         <div class="modal-footer border-secondary">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
           <button type="button" class="btn btn-primary" id="btnSettingsSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Model Tests Modal ───────────────────────────────────────────────── -->
+  <div class="modal fade" id="modelTestModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-xl" id="modelTestModalDialog">
+      <div class="modal-content app-modal border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title"><i class="bi bi-clipboard2-check me-2"></i>Model Tests</h5>
+          <button class="btn btn-sm btn-outline-secondary" id="btnModelTestFullscreen" title="Toggle full screen">
+            <i class="bi bi-arrows-fullscreen"></i>
+          </button>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3">
+            <!-- Top left: available models with a checkbox each -->
+            <div class="col-md-4">
+              <label class="form-label text-secondary mb-0">Models</label>
+              <div id="modelTestModelList" class="border border-secondary rounded"
+                   style="max-height:360px;overflow-y:auto;">
+                <!-- Model checkboxes injected here -->
+              </div>
+            </div>
+            <!-- Top right: prompt + submit -->
+            <div class="col-md-8">
+              <label class="form-label text-secondary" for="modelTestPrompt">Prompt</label>
+              <textarea id="modelTestPrompt" class="form-control border-secondary" rows="7"
+                        placeholder="Enter the prompt to send to every selected model…"></textarea>
+              <div class="mt-2 d-flex justify-content-end">
+                <button type="button" class="btn btn-primary" id="btnModelTestSubmit">
+                  <i class="bi bi-play-fill me-1"></i>Run tests
+                </button>
+              </div>
+            </div>
+          </div>
+          <hr class="border-secondary" />
+          <div id="modelTestResults">
+            <div class="text-secondary small">Select models, enter a prompt and click <strong>Run tests</strong>.
+              Responses longer than 200 characters are saved to the <code>model_test_results</code> folder.</div>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <span id="modelTestStatus" class="text-secondary small me-auto"></span>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
         </div>
       </div>
     </div>
@@ -959,6 +1010,7 @@
   <script src="/js/linked_folders.js"></script>
   <script src="/js/folder_browser.js"></script>
   <script src="/js/save_files.js"></script>
+  <script src="/js/model_tests.js"></script>
   <script src="/js/projects.js"></script>
   <script src="/js/diff_view.js"></script>
   <script src="/js/app.js"></script>

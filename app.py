@@ -135,6 +135,10 @@ def create_app(config=None):
     from routes.research import research_bp
     app_inst.register_blueprint(research_bp)
 
+    # Model testing window.
+    from routes.model_tests import model_tests_bp
+    app_inst.register_blueprint(model_tests_bp)
+
     # Phase 4 (C20): worker startup wiring. Starts exactly one daemon worker
     # thread through the application factory.
     if config and config.get("START_PROPAGATION_WORKER"):
