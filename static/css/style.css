@@ -774,15 +774,18 @@ body {
 
 .project-panel-window {
   position: relative;
-  width: min(96vw, 1000px);
-  max-height: 92vh;
+  /* Full screen by default: the panel is the primary view for a project's
+     plan/status, so maximize the workspace. */
+  width: 100%;
+  height: 100%;
+  max-height: none;
   display: flex;
   flex-direction: column;
   background: var(--app-modal-bg);
   color: var(--app-text);
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   z-index: 1041;
 }
 

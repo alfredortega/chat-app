@@ -64,6 +64,14 @@ const ProjectPanel = {
       if (a.artifact_key) this._artifactRoles[a.artifact_key] = a.role || a.artifact_key;
     });
 
+    // Reverse map: display role -> artifact keys (for per-agent updates).
+    this._artifactKeysByRole = {};
+    (data.artifacts || []).forEach((a) => {
+      if (!a.artifact_key) return;
+      const role = a.role || a.role_persona_id || "Unknown role";
+      (this._artifactKeysByRole[role] = this._artifactKeysByRole[role] || []).push(a.artifact_key);
+    });
+
     bodyEl.innerHTML = this._render(data, settings, issues, assumptions, requests, errors);
     Object.entries(drafts).forEach(([issueId, value]) => {
       const t = bodyEl.querySelector(`textarea[data-issue-id="${issueId}"]`);
@@ -74,6 +82,7 @@ const ProjectPanel = {
     this._wireIssueControls(bodyEl);
     this._wireRequestControls(bodyEl);
     this._wireArtifactsToggle(bodyEl);
+    this._wireRoleButtons(bodyEl);
   },
 
   _wireRequestControls(el) {
@@ -115,6 +124,63 @@ const ProjectPanel = {
       if (icon) icon.className = `bi bi-chevron-${this._artifactsCollapsed ? "right" : "down"} artifacts-toggle-icon`;
       body.classList.toggle("d-none", this._artifactsCollapsed);
     });
+  },
+
+  _wireRoleButtons(el) {
+    el.querySelectorAll("[data-update-role]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (this._checkingChanges) return;
+        const role = btn.dataset.updateRole;
+        const keys = (this._artifactKeysByRole && this._artifactKeysByRole[role]) || [];
+        if (!keys.length) return;
+        await this._updateRole(role, keys);
+      });
+    });
+  },
+
+  /** Re-run propagation scoped to a single agent's artifacts. Uses the same
+   *  wave/vote pipeline as "Check for changes" but only touches jobs of the
+   *  given artifacts — already-applied siblings are left alone. */
+  async _updateRole(role, keys) {
+    if (this._checkingChanges) return;
+    this._checkingChanges = true;
+    this._checkComplete = false;
+    this._workingArtifactKeys.clear();
+    this._updateCheckProgress();
+    let completed = false;
+    try {
+      const changes = (await API.getProjectChanges(this._projectId)) || [];
+      const nonTerminal = ["pending", "queued", "running", "failed", "needs_input"];
+      const relevant = changes.filter((c) =>
+        (c.jobs || []).some((j) => keys.includes(j.artifact_key) && nonTerminal.includes(j.state))
+      );
+      if (!relevant.length) {
+        alert(`Nothing to update for ${role} — no pending artifact jobs for this agent.`);
+        return;
+      }
+      const started = [];
+      for (const ev of relevant) {
+        try {
+          const res = await API.runPropagation(this._projectId, ev.id, keys);
+          if (res && res.started !== false) started.push(ev.id);
+        } catch (err) {
+          alert(`${role} update for change #${ev.id} did not start: ${err.message}`);
+        }
+      }
+      if (started.length) {
+        completed = await this._waitForWaves(this._projectId, started, {
+          pollMs: 3000,
+          onProgress: (jobs) => this._showWorkingArtifacts(jobs),
+        });
+      }
+    } catch (err) {
+      alert(`Update ${role} failed: ${err.message}`);
+    } finally {
+      this._checkingChanges = false;
+      this._checkComplete = completed;
+      this._workingArtifactKeys.clear();
+      ProjectPanel.open(this._projectId);
+    }
   },
 
   _wireIssueControls(el) {
@@ -361,6 +427,11 @@ const ProjectPanel = {
         <div class="project-role-header">
           <span class="project-role-name">${row.role}</span>
           <span data-role-status data-status="${_esc(row.rollup)}">${this._workingArtifactKeys.size && row.artifacts.some((a) => this._workingArtifactKeys.has(a.artifact_key)) ? this._workingStatus() : this._statusBadge(row.rollup)}</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary update-role-btn"
+                  data-update-role="${_esc(row.role)}"
+                  title="Re-run propagation for only ${_esc(row.role)}'s artifacts">
+            <i class="bi bi-arrow-repeat"></i>
+          </button>
         </div>
         ${row.artifacts.map((a) => `
           <div class="project-artifact-row" data-artifact="${a.artifact_key}">

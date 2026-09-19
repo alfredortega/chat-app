@@ -313,14 +313,18 @@ def run_propagation_wave(
     model_id: str = "fake-model",
     max_iterations: int = 25,
     on_payload: Callable[[RewritePayload], None] | None = None,
+    artifact_keys: list[str] | None = None,
 ) -> list[RewritePayload]:
     """
-    Run every queued job for a change event using ``client`` (a fake or real
-    model client) and return validated in-memory rewrite payloads.
+    Run every queued job (optionally scoped to ``artifact_keys``) for a change
+    event using ``client`` (a fake or real model client) and return validated
+    in-memory rewrite payloads.
 
     ``on_payload`` is invoked after each valid artifact rewrite, allowing the
     caller to persist it before the next agent begins. Same-role artifacts for
-    one change share a single conversation (D16).
+    one change share a single conversation (D16). When ``artifact_keys`` is
+    given, only those artifacts' jobs are processed — already-applied siblings
+    are untouched, so a single-agent update never disturbs the rest.
     """
     import database as db_module
     from chat_service import run_chat_turn
@@ -366,6 +370,11 @@ def run_propagation_wave(
             job for job in db_module.list_propagation_jobs(change_id)
             if job["state"] in ("pending", "queued", "running")
         ]
+        if artifact_keys:
+            _scoped = set(artifact_keys)
+            jobs = [job for job in jobs if job["artifact_key"] in _scoped]
+        if not jobs:
+            return []
 
         # Load the dependency graph ONCE per wave — every job's upstream prompt
         # reads from this same snapshot (D13). Re-querying per job was wasted DB

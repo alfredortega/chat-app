@@ -256,7 +256,7 @@ class TestRunPropagationRoute:
         the job instead of nuking everything with a crash traceback."""
         from propagation.agent import RewritePayload
 
-        def fake_run_wave(app, project_id, change_id, client, model_id="", on_payload=None):
+        def fake_run_wave(app, project_id, change_id, client, model_id="", on_payload=None, artifact_keys=None):
             return [
                 RewritePayload(
                     artifact_key="DB-MODEL", content="",

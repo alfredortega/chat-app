@@ -334,17 +334,36 @@ def run_propagation_route(project_id: int, change_id: int):
     if event is None:
         return api_error("Change event not found", 404)
 
+    # Optional scoping: restrict the wave to specific artifacts (e.g. a single
+    # agent's "Update" button) instead of every registered artifact. Siblings
+    # not listed are left untouched.
+    body = request.get_json(silent=True) or {}
+    artifact_keys = body.get("artifact_keys")
+    if artifact_keys is not None:
+        if not isinstance(artifact_keys, list) or not artifact_keys:
+            return api_error("artifact_keys must be a non-empty list.", 400)
+        artifact_keys = list(dict.fromkeys(str(k) for k in artifact_keys))
+        registered = {a["artifact_key"] for a in db.list_artifacts(project_id)}
+        artifact_keys = [k for k in artifact_keys if k in registered]
+        if not artifact_keys:
+            return api_error("No matching artifacts are registered for this project.", 400)
+
     # Every role reviews its registered artifact for a detected requirements
     # change. This intentionally does not restrict the wave to traced impact:
     # each role owns the correctness of its own project artifact.
     jobs = db.list_propagation_jobs(change_id)
+    if artifact_keys is not None:
+        _keys = set(artifact_keys)
+        jobs = [j for j in jobs if j["artifact_key"] in _keys]
     if not jobs:
         from propagation.impact import queue_propagation_jobs
-        artifact_keys = [a["artifact_key"] for a in db.list_artifacts(project_id)]
+        queue_keys = artifact_keys if artifact_keys is not None else [
+            a["artifact_key"] for a in db.list_artifacts(project_id)
+        ]
         jobs = queue_propagation_jobs(project_id, change_id,
                                       event.get("changed_reqs") or [],
                                       event.get("removed_reqs") or [],
-                                      artefact_keys=artifact_keys)
+                                      artefact_keys=queue_keys)
     if not jobs:
         return api_error("No artifacts are affected by this change.", 400)
 
@@ -361,8 +380,9 @@ def run_propagation_route(project_id: int, change_id: int):
         for job_id in reset_targets:
             db.update_propagation_job(job_id, state="pending", error="", attempts=0)
         active = [j["id"] for j in db.list_propagation_jobs(change_id)
-                  if j["state"] not in ("applied", "proposed", "cancelled",
-                                        "completed", "rejected")]
+                  if (artifact_keys is None or j["artifact_key"] in set(artifact_keys))
+                  and j["state"] not in ("applied", "proposed", "cancelled",
+                                         "completed", "rejected")]
     if not active:
         return api_error("This wave is already complete — no pending jobs.", 409)
 
@@ -382,6 +402,7 @@ def run_propagation_route(project_id: int, change_id: int):
     thread = threading.Thread(
         target=_run_wave_background,
         args=(app, project_id, change_id, endpoint, model_id),
+        kwargs={"artifact_keys": artifact_keys},
         daemon=True,
     )
     thread.start()
@@ -390,15 +411,17 @@ def run_propagation_route(project_id: int, change_id: int):
         "started": True,
         "change_id": change_id,
         "jobs": len(active),
+        "artifact_keys": artifact_keys,
     })
 
 
-def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, model_id: str) -> None:
+def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, model_id: str, artifact_keys: list[str] | None = None) -> None:
     """Run the propagation wave for a change off the request thread.
 
     Executes in a dedicated app context (thread-safe session handling) so the
     SSE job stream observes job state changes. Validated rewrites are applied
     as each agent finishes; on failure queued/running jobs become ``failed``.
+    When ``artifact_keys`` is given only those artifacts participate.
     """
     def task():
         from app import get_client
@@ -427,6 +450,7 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
         payloads = run_propagation_wave(
             app, project_id, change_id, client, model_id=model_id,
             on_payload=apply_completed_payload,
+            artifact_keys=artifact_keys,
         )
         if applied_keys:
             from git_integration import create_wave_commit
@@ -443,8 +467,9 @@ def _run_wave_background(app, project_id: int, change_id: int, endpoint: dict, m
         # surface it rather than leaking an eternal spinner.
         # Note: payloads are RewritePayload dataclasses (attribute access).
         by_key = {p.artifact_key: p for p in payloads}
+        scope = set(artifact_keys) if artifact_keys else None
         for job in db.list_propagation_jobs(change_id):
-            if job["state"] in ("queued", "running"):
+            if job["state"] in ("queued", "running") and (scope is None or job["artifact_key"] in scope):
                 target = by_key.get(job["artifact_key"])
                 db.update_propagation_job(job["id"], state="failed",
                                           error=(target.errors[0] if target and target.errors

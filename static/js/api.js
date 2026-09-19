@@ -532,9 +532,14 @@ const API = {
     return res.json();
   },
 
-  /** Run the agent wave for a change event, producing reviewable proposals. */
-  async runPropagation(id, changeId) {
-    const res = await fetch(`/api/projects/${id}/changes/${changeId}/run-propagation`, { method: "POST" });
+  /** Run the agent wave for a change event, producing reviewable proposals.
+   *  Pass ``artifactKeys`` to restrict the wave to specific artifacts
+   *  (e.g. a single agent's "Update" button). */
+  async runPropagation(id, changeId, artifactKeys) {
+    const body = Array.isArray(artifactKeys) && artifactKeys.length
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_keys: artifactKeys }) }
+      : { method: "POST" };
+    const res = await fetch(`/api/projects/${id}/changes/${changeId}/run-propagation`, body);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },

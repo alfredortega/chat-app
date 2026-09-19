@@ -194,6 +194,71 @@ class TestArtifactRequestRoutes:
         assert reject.get_json()["status"] == "rejected"
 
 
+class TestScopedPropagation:
+    """Per-agent "Update" scopes run-propagation to a subset of artifacts."""
+
+    def test_scoped_run_restricts_jobs_and_scope_forwarded(self, tmp_db, project_env, monkeypatch):
+        from routes import projects as projects_routes
+
+        captured = {}
+
+        def fake_run_wave(app, project_id, change_id, endpoint, model_id, artifact_keys=None):
+            captured.update(
+                project_id=project_id, change_id=change_id, artifact_keys=artifact_keys
+            )
+
+        monkeypatch.setattr(projects_routes, "_run_wave_background", fake_run_wave)
+
+        client, pid, event, _ = project_env
+        with _app(tmp_db).app_context():
+            db_module.set_setting("allow_local_file_access", "1")
+            db_module.create_endpoint(
+                "fake", "http://fase.openai.test/v1", api_key="k", default_model="m", is_default=True
+            )
+            from propagation.impact import queue_propagation_jobs
+            queue_propagation_jobs(pid, event["id"], ["REQ-014"])
+            jobs = db_module.list_propagation_jobs(event["id"])
+            assert any(j["artifact_key"] == "SEC-RISK" for j in jobs)
+            for job in jobs:
+                if job["artifact_key"] == "SEC-RISK":
+                    db_module.update_propagation_job(job["id"], state="pending")
+                else:
+                    db_module.update_propagation_job(job["id"], state="applied")
+
+        resp = client.post(
+            f"/api/projects/{pid}/changes/{event['id']}/run-propagation",
+            json={"artifact_keys": ["SEC-RISK"]},
+        )
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        body = resp.get_json()
+        assert body is not None and body.get("started") is True, body
+        assert body.get("artifact_keys") == ["SEC-RISK"]
+        assert body.get("jobs") == 1
+
+        with _app(tmp_db).app_context():
+            jobs = db_module.list_propagation_jobs(event["id"])
+        sec = next(j for j in jobs if j["artifact_key"] == "SEC-RISK")
+        assert sec["state"] == "queued"
+        others = [j for j in jobs if j["artifact_key"] != "SEC-RISK"]
+        assert others and all(j["state"] == "applied" for j in others)
+
+        assert captured.get("artifact_keys") == ["SEC-RISK"]
+        assert captured.get("change_id") == event["id"]
+
+    def test_scoped_run_rejects_unknown_artifact_keys(self, tmp_db, project_env):
+        client, pid, event, _ = project_env
+        with _app(tmp_db).app_context():
+            db_module.set_setting("allow_local_file_access", "1")
+            db_module.create_endpoint(
+                "fake", "http://fase.openai.test/v1", api_key="k", default_model="m", is_default=True
+            )
+        resp = client.post(
+            f"/api/projects/{pid}/changes/{event['id']}/run-propagation",
+            json={"artifact_keys": ["NOT-AN-ARTIFACT"]},
+        )
+        assert resp.status_code == 400
+
+
 class TestSettingsRoutes:
     def test_update_settings(self, tmp_db, project_env):
         client, pid, _event, _ = project_env
