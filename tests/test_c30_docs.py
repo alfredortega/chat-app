@@ -16,12 +16,14 @@ class TestHelpHtml:
         assert 'href="#propagation"' in html
 
     def test_section_numbers_renumbered(self):
-        """Settings=13 and Tips=14 after the two new sections (§7.1)."""
+        """Document editor §10 added; Settings=14 and Tips=15 after the shift."""
         html = _read("static/help.html")
-        assert 'id="projects">11. Creating a Project' in html
-        assert 'id="propagation">12. Automatic Updates Between Personas' in html
-        assert 'id="settings" style="page-break-before:always">13. Settings Explained' in html
-        assert 'id="tips">14. Tips &amp; Troubleshooting' in html
+        assert 'id="mdeditor">10. Viewing &amp; Editing Markdown Documents' in html
+        assert 'id="tools">11. What the Assistant Can Do (Tools)' in html
+        assert 'id="projects">12. Creating a Project' in html
+        assert 'id="propagation">13. Automatic Updates Between Personas' in html
+        assert 'id="settings" style="page-break-before:always">14. Settings Explained' in html
+        assert 'id="tips">15. Tips &amp; Troubleshooting' in html
 
     def test_section_11_12_content(self):
         html = _read("static/help.html")
@@ -35,6 +37,14 @@ class TestHelpHtml:
         html = _read("static/help.html")
         assert "aren't auto-updating" in html or "Unresolved assumptions" in html
         assert "Git is missing" in html
+
+    def test_markdown_editor_documented(self):
+        html = _read("static/help.html")
+        assert 'href="#mdeditor"' in html
+        assert "full screen" in html.lower()
+        for term in ["Viewing &amp; Editing Markdown Documents", "Split", "Edit only",
+                     "Preview", "Save as PDF", "managed", "docx", "Unsaved changes"]:
+            assert term in html or term.lower() in html.lower()
 
 
 class TestReadme:

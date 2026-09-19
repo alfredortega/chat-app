@@ -201,6 +201,7 @@
         <li><a href="#models">Choosing a Model</a></li>
         <li><a href="#files">Attaching Files &amp; Folders</a></li>
         <li><a href="#output">Saving the AI's Work to Disk</a></li>
+        <li><a href="#mdeditor">Viewing &amp; Editing Markdown Documents</a></li>
         <li><a href="#tools">What the Assistant Can Do (Tools)</a></li>
         <li><a href="#projects">Creating a Project</a></li>
         <li><a href="#propagation">Automatic Updates Between Personas</a></li>
@@ -292,7 +293,8 @@
           <td>Where your messages and the assistant's replies appear.</td></tr>
         <tr><td><strong>Input area (bottom)</strong></td>
           <td>Where you type. A toolbar underneath provides buttons for attaching files,
-          linking folders, importing a document, and setting the output folder.</td></tr>
+          linking folders, importing a document, setting the output folder, and opening the
+          <em>Documents</em> window to view and edit the Markdown files the AI has created.</td></tr>
       </tbody>
     </table>
 
@@ -492,7 +494,90 @@
     It splits the reply into separate files &mdash; one per section &mdash; and saves them all to
     your output folder. You can adjust each filename before saving.</p>
 
-    <h2 id="tools">10. What the Assistant Can Do (Tools)</h2>
+    <h2 id="mdeditor">10. Viewing &amp; Editing Markdown Documents</h2>
+    <p>Every Markdown file (<code>.md</code> or <code>.markdown</code>) the assistant creates for a
+    conversation appears in the <strong>Documents</strong> window &mdash; whether it was written to
+    your output folder or stored with the conversation. Click the documents icon
+    <i class="bi bi-file-earmark-richtext"></i> on the toolbar beneath the message box to open it.
+    There you can view the rendered document, edit the raw Markdown source, save your changes,
+    rename the file, and export it as a Word or PDF document.</p>
+
+    <h3>The document list</h3>
+    <p>The window lists the Markdown files for the current conversation: files in the
+    conversation's output folder first, then any <code>.md</code>/<code>.markdown</code> files
+    uploaded to the conversation (matching names are shown once). Each row shows the file name, its
+    size and last-modified age (for example <code>1.8 KB &middot; modified 2 minutes ago</code>),
+    and, where relevant, a small red <strong>managed</strong> badge for files that belong to a
+    managed project (see <a href="#projects">section 12</a>). Three actions are available per row:</p>
+    <table>
+      <thead><tr><th>Action</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><strong>View</strong></td>
+          <td>Opens the document in the editor, showing the rendered Markdown.</td></tr>
+        <tr><td><strong>Edit</strong></td>
+          <td>Opens the document with the Markdown source ready to edit. This button is greyed out
+          when the file is read-only (for example, output files while local file access is off).</td></tr>
+        <tr><td><strong>Download</strong></td>
+          <td>Downloads the file as a <code>.md</code> document without opening the editor.</td></tr>
+      </tbody>
+    </table>
+    <p>Clicking the row's name is the same as <em>View</em>. The window header also has an
+    <em>Open output folder</em> button, which reveals the conversation's output folder in your file
+    manager, and a <em>Refresh from disk</em> button. When the assistant writes a new Markdown file
+    while the window is open, the list refreshes itself automatically.</p>
+
+    <h3>The editor window</h3>
+    <p>The editor opens <strong>full screen by default</strong>, in both View and Edit modes, so
+    large documents get the maximum reading and editing space. It offers three viewing modes,
+    switched from the toolbar:</p>
+    <table>
+      <thead><tr><th>Mode</th><th>What it shows</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Preview</strong></td>
+          <td>The rendered document only &mdash; ideal for reading. The source editor is hidden.</td></tr>
+        <tr><td><strong>Split</strong></td>
+          <td>The Markdown source on the left and the rendered preview on the right, side by side.
+          The preview updates as you type. On a narrow screen this stacks the source above the
+          preview instead.</td></tr>
+        <tr><td><strong>Edit only</strong></td>
+          <td>Just the Markdown source, spanning the full width, with a formatting toolbar for bold,
+          italic, headings, quotes, lists, tables, links, images, code and horizontal rules.</td></tr>
+      </tbody>
+    </table>
+    <p>A live character and word count (<code>chars &middot; words</code>) sits at the right of the
+    toolbar, and an <em>Unsaved changes</em> indicator appears whenever your edits have not been
+    saved. Press <kbd>Ctrl</kbd>+<kbd>S</kbd> (or <kbd>Cmd</kbd>+<kbd>S</kbd> on Mac) to save at
+    any time.</p>
+
+    <h3>Saving, refreshing and conflicts</h3>
+    <p><em>Save</em> writes the document safely &mdash; the application never leaves a partially
+    written file if saving is interrupted. <em>Cancel</em> discards your edits, and
+    <em>Refresh</em> reloads the document from disk; both ask for confirmation first if you have
+    unsaved changes. If the file was changed outside the editor since you opened it &mdash; by
+    another program, or by the assistant in another chat &mdash; a conflict warning appears and
+    <strong>your edits are kept</strong> so nothing is overwritten. You can then reload the newer
+    server version, download or copy your edits to keep them, or reveal the server version and
+    merge the two manually before saving again.</p>
+
+    <h3>Rename, Word and PDF export</h3>
+    <ul>
+      <li><strong>Download</strong> saves the document, including any unsaved edits, as a
+      <code>.md</code> file.</li>
+      <li><strong>Word</strong> exports the current content as a <code>.docx</code> file with
+      headings, code blocks, tables, lists and emphasis preserved. Unsaved edits are included.</li>
+      <li><strong>PDF</strong> opens a print-ready copy of the rendered document and starts your
+      browser's print dialog &mdash; choose <em>Save as PDF</em> as the destination.</li>
+      <li><strong>Rename</strong> gives the document a new name (Markdown names only).</li>
+    </ul>
+    <div class="callout">
+      <p><strong>Project artifacts:</strong> a Markdown file inside a managed project workspace
+      (for example a requirements document) is shown with a <em>managed</em> badge. Editing one
+      goes through the project review workflow described in <a href="#projects">section 12</a>:
+      the change is recorded as a human edit and committed to the project's git repository, and
+      downstream artifacts are updated only after you approve the propagation for the project.</p>
+    </div>
+
+    <h2 id="tools">11. What the Assistant Can Do (Tools)</h2>
     <p>Beyond answering in the chat, the assistant can perform a few practical actions when it
     genuinely helps with your request:</p>
     <table>
@@ -533,7 +618,7 @@
     </div>
 
 
-    <h2 id="projects">11. Creating a Project</h2>
+    <h2 id="projects">12. Creating a Project</h2>
     <p>A <strong>project</strong> is a managed workspace for a software-development
     effort. Creating one scaffolds a set of <em>artifacts</em> — the requirements
     document, wireframes, data model, test plan, security risk register and
@@ -553,7 +638,7 @@
     (<code>artifact_id</code>, <code>role</code>, <code>version</code>,
     <code>derives_from</code>), and the requirements document uses stable
     <code>## REQ-nnn — Title</code> headings. These identifiers are what the
-    automatic-update machinery (section 12) uses to decide what changed.</p>
+    automatic-update machinery (section 13) uses to decide what changed.</p>
     <p>The workspace is a git repository, so every applied update is a commit you
     can roll back. <strong>Git is a hard requirement for managed projects.</strong></p>
     <p>Each project folder is shown in the sidebar with a blue
@@ -566,7 +651,7 @@
     </div>
 
 
-    <h2 id="propagation">12. Automatic Updates Between Personas</h2>
+    <h2 id="propagation">13. Automatic Updates Between Personas</h2>
     <p>When the Business Analyst changes a requirement, every downstream artifact
     that is affected is detected, regenerated in dependency order, and presented to
     you as a reviewable diff. Nothing is applied without your approval.</p>
@@ -616,7 +701,7 @@
     or reject the request there; propagation never creates files on its own.</p>
 
 
-        <h2 id="settings" style="page-break-before:always">13. Settings Explained</h2>
+        <h2 id="settings" style="page-break-before:always">14. Settings Explained</h2>
     <p>All application-wide settings live in the <em>Settings</em> window (the gear icon).
     Here is what each one does and how it is applied:</p>
     <table>
@@ -679,7 +764,7 @@
       defaults to on for new conversations.</li>
     </ul>
 
-        <h2 id="tips">14. Tips &amp; Troubleshooting</h2>
+        <h2 id="tips">15. Tips &amp; Troubleshooting</h2>
     <table>
       <thead><tr><th>Situation</th><th>What to check</th></tr></thead>
       <tbody>
