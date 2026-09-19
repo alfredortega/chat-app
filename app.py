@@ -478,6 +478,12 @@ def chat(conv_id):
     if not user_content:
         return jsonify({"error": "Empty message"}), 400
 
+    # Auto-generate title from the first user message, but only when the
+    # conversation still has its default name — a custom/user-set name must
+    # never be overwritten.
+    _default_title = "New Conversation"
+    has_default_title = not (conv["title"] or "").strip() or (conv["title"] or "").strip() == _default_title
+
     # Persist the user message
     db.add_message(conv_id, "user", user_content)
     db.touch_conversation(conv_id)
@@ -485,7 +491,7 @@ def chat(conv_id):
     # Auto-generate title from the first user message
     messages_so_far = db.get_messages(conv_id)
     user_messages = [m for m in messages_so_far if m["role"] == "user"]
-    if len(user_messages) == 1:
+    if len(user_messages) == 1 and has_default_title:
         auto_title = _make_title(user_content)
         db.update_conversation(conv_id, title=auto_title)
 
@@ -527,8 +533,9 @@ def chat(conv_id):
 
     def generate():
         """Stream SSE events back to the browser."""
-        # Send updated title if this was the first message
-        if len(user_messages) == 1:
+        # Send updated title if this was the first message (and the
+        # conversation still had the default name).
+        if len(user_messages) == 1 and has_default_title:
             yield sse_event({"type": "title", "title": _make_title(user_content), "conv_id": conv_id})
 
         # Disclose what context was injected for this message (scope/tokens/warn)

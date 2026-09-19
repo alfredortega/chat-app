@@ -23,7 +23,12 @@ const SaveFiles = {
 
     this._localAccess = (App.allowLocalFileAccess !== false);
 
-    const outputDir = this._localAccess ? (App.outputDir || "") : "";
+    // Default to the conversation's effective output folder (conversation
+    // override → app default) so "Save as file" always targets the folder
+    // that conversation writes to.
+    const convDir = (App.convOutputDir || "").trim();
+    const appDir  = (App.outputDir || "").trim();
+    const outputDir = this._localAccess ? (convDir || appDir) : "";
     const dirField = document.getElementById("saveFilesOutputDir");
     if (dirField) dirField.value = outputDir;
     const dirGroup = document.getElementById("saveFilesOutputDirGroup");
@@ -86,9 +91,13 @@ const SaveFiles = {
         alert("Please enter an output directory path.");
         return;
       }
-      // Persist the chosen directory so it becomes the new default
-      App.outputDir = dir;
-      try { await API.saveSettings({ output_dir: dir }); } catch (_) {}
+      // Persist a user-chosen directory so it becomes the new app default —
+      // but never let the conversation's own folder clobber the app default
+      // when it was left untouched.
+      if (dir !== (App.convOutputDir || "").trim()) {
+        App.outputDir = dir;
+        try { await API.saveSettings({ output_dir: dir }); } catch (_) {}
+      }
     }
 
     // Collect (possibly edited) filenames

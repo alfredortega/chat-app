@@ -205,3 +205,37 @@ class TestChatServiceRealSdkChunks:
 
         done_events = [e for e in events if e["type"] == "done"]
         assert len(done_events) == 1
+
+
+class TestAutoTitle:
+    """First-prompt auto-title must not overwrite a user-set conversation name."""
+
+    def _kick_off(self, tmp_db, monkeypatch, title):
+        from tests.fakes import FakeOpenAIClient
+
+        app = _app(tmp_db)
+        fake = FakeOpenAIClient()
+        fake.add_text_response("ok")
+        monkeypatch.setattr("app.get_client", lambda endpoint: fake)
+        with app.app_context():
+            endpoint = db_module.create_endpoint(
+                "Fake", "http://fase.openai.test/v1", api_key="f", default_model="test-model", is_default=True
+            )
+            conv = db_module.create_conversation(title, "test-model", endpoint_id=endpoint["id"])
+            conv_id = conv["id"]
+        with app.test_client() as client:
+            client.post(f"/api/conversations/{conv_id}/chat", json={"message": "Tell me about the budget"})
+        return app, conv_id
+
+    def test_default_name_is_auto_titled_on_first_prompt(self, tmp_db, monkeypatch):
+        app, conv_id = self._kick_off(tmp_db, monkeypatch, "New Conversation")
+        with app.app_context():
+            title = db_module.get_conversation(conv_id)["title"]
+        assert title and title != "New Conversation"
+        assert "budget" in title
+
+    def test_custom_name_is_preserved(self, tmp_db, monkeypatch):
+        app, conv_id = self._kick_off(tmp_db, monkeypatch, "Security Analyst")
+        with app.app_context():
+            title = db_module.get_conversation(conv_id)["title"]
+        assert title == "Security Analyst"

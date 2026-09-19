@@ -126,7 +126,7 @@ let docs = [];
 let readDoc = null;
 
 global.API = {
-  async listDocuments() { listCalls.push(docs.length); return { documents: docs }; },
+  async listDocuments(convId) { listCalls.push(convId); return { documents: docs }; },
   async getDocument() { readCalls.push(1); return readDoc; },
   async saveDocument(convId, docId, content, expectedHash) {
     saveCalls.push({ convId, docId, content, expectedHash });
@@ -334,14 +334,16 @@ readDoc = Object.assign({ content: "# Report\n\nHello world\n" }, docs[0]);
   check("ctrl+s saves", saveCalls.length > savesBefore && saveCalls[saveCalls.length - 1].content.includes("saved by shortcut"),
     "ctrl+s did not save");
 
-  // 12 ── Refresh list endpoint is re-fetched
+  // 12 ── Refresh list targets the active conversation's output folder
   const before = listCalls.length;
   await MD.refreshList();
   check("refreshList refetches documents", listCalls.length > before, "list not refetched");
+  check("refreshList targets active conversation", listCalls[listCalls.length - 1] === 7,
+    `wrong conv targeted: ${JSON.stringify(listCalls)}`);
 
-  // 13 ── Open output folder routes through the server
+  // 13 ── Open output folder routes through the server for the active conversation
   await MD.openOutputFolder();
-  check("open output folder posts to server", openDirCalls.length === 1 && openDirCalls[0] === 1,
+  check("open output folder posts to server", openDirCalls.length === 1 && openDirCalls[0] === 7,
     `openOutputDir not called: ${JSON.stringify(openDirCalls)}`);
 
   if (failures.length) {

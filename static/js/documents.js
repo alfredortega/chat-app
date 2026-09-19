@@ -81,11 +81,11 @@ const MarkdownDocuments = {
     this._renderList();
   },
 
-  /** Public refresh hook (SSE document_created events, save-as-files, saves). */
+  /** Public refresh hook (SSE document_created events, save-as-files, saves).
+   *  Always targets the currently active conversation so the selector never
+   *  shows a stale conversation's output folder. */
   async refreshList() {
-    if (!this._convId) {
-      if (typeof App !== "undefined" && App.activeConvId) this._convId = App.activeConvId;
-    }
+    if (typeof App !== "undefined" && App.activeConvId) this._convId = App.activeConvId;
     if (this._convId) await this.load(this._convId);
   },
 
