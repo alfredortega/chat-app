@@ -35,10 +35,15 @@
 <body class="d-flex flex-column vh-100 overflow-hidden">
 
   <!-- ── Top Navbar ─────────────────────────────────────────────────────── -->
-  <nav class="navbar app-navbar border-bottom border-secondary flex-shrink-0 px-3 py-2">
-    <span class="navbar-brand mb-0 h5 d-flex align-items-center gap-2">
-      <i class="bi bi-robot text-primary">My Chat App</i> 
-    </span>
+<nav class="navbar app-navbar border-bottom border-secondary flex-shrink-0 px-3 py-2">
+    <div class="d-flex align-items-center gap-2">
+      <button class="btn btn-sm btn-outline-secondary" id="btnToggleSidebar" title="Hide sidebar">
+        <i class="bi bi-layout-sidebar"></i>
+      </button>
+      <span class="navbar-brand mb-0 h5 d-flex align-items-center gap-2">
+        <i class="bi bi-robot text-primary">My Chat App</i>
+      </span>
+    </div>
     <div class="d-flex align-items-center gap-2">
       <!-- Model selector -->
       <label class="text-secondary small me-1 mb-0" for="modelSelect">Model:</label>
@@ -61,7 +66,7 @@
   </nav>
 
   <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
-  <div class="d-flex flex-grow-1 overflow-hidden">
+  <div class="d-flex flex-grow-1 overflow-hidden" id="appMainLayout">
 
     <!-- Sidebar -->
     <aside id="sidebar" class="d-flex flex-column border-end border-secondary flex-shrink-0">
@@ -84,6 +89,9 @@
         <!-- Conversation items injected here -->
       </div>
     </aside>
+
+    <!-- Sidebar resize handle -->
+    <div id="sidebarResizer" title="Drag to resize sidebar" aria-hidden="true"></div>
 
     <!-- Chat area -->
     <main class="d-flex flex-column flex-grow-1 overflow-hidden">

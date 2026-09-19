@@ -63,6 +63,10 @@ const App = {
     if (typeof MarkdownDocuments !== "undefined") MarkdownDocuments.init();
     if (typeof ImportMarkdown !== "undefined") ImportMarkdown.init();
 
+    // Draggable sidebar width
+    this._initSidebarResizer();
+    this._initSidebarToggle();
+
     // Apply saved theme early
     this._applyTheme(localStorage.getItem("theme") || "dark");
 
@@ -1697,6 +1701,96 @@ const App = {
   },
   _toggleTheme() {
     this._applyTheme(this.theme === "dark" ? "light" : "dark");
+  },
+
+  // ── Sidebar resize ────────────────────────────────────────────────────────
+
+  /** Enable drag-to-resize on the sidebar (grab the handle, width persists). */
+  _initSidebarResizer() {
+    const MIN = 180;
+    const MAX = 480;
+    const bar = document.getElementById("sidebarResizer");
+    const sidebar = document.getElementById("sidebar");
+    if (!bar || !sidebar) return;
+
+    const saved = parseFloat(localStorage.getItem("sidebarWidth") || "");
+    if (Number.isFinite(saved) && saved >= MIN && saved <= MAX) {
+      sidebar.style.width = saved + "px";
+    }
+
+    let dragging = false;
+    let startX = 0;
+    let startW = 0;
+
+    const update = (clientX) => {
+      if (!dragging) return;
+      const w = Math.min(MAX, Math.max(MIN, startW + (clientX - startX)));
+      sidebar.style.width = w + "px";
+    };
+
+    const onMouseMove = (e) => update(e.clientX);
+    const onTouchMove = (e) => {
+      if (e.touches.length === 1) update(e.touches[0].clientX);
+    };
+
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      bar.classList.remove("dragging");
+      document.body.classList.remove("resizing-sidebar");
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", end);
+      window.removeEventListener("touchmove", onTouchMove, { passive: false });
+      window.removeEventListener("touchend", end);
+      localStorage.setItem("sidebarWidth", String(sidebar.offsetWidth));
+    };
+
+    const begin = (clientX) => {
+      dragging = true;
+      startX = clientX;
+      startW = sidebar.offsetWidth;
+      bar.classList.add("dragging");
+      document.body.classList.add("resizing-sidebar");
+      // Move listeners live only for the duration of a drag.
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", end);
+      window.addEventListener("touchmove", onTouchMove, { passive: false });
+      window.addEventListener("touchend", end);
+      update(clientX);
+    };
+
+    bar.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      begin(e.clientX);
+    });
+    bar.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1) begin(e.touches[0].clientX);
+    }, { passive: false });
+  },
+
+  // ── Sidebar expand / collapse ─────────────────────────────────────────────
+
+  /** Toggle the sidebar open/closed; state persists across reloads. */
+  _initSidebarToggle() {
+    const btn = document.getElementById("btnToggleSidebar");
+    const layout = document.getElementById("appMainLayout");
+    if (!btn || !layout) return;
+
+    const applyState = (collapsed) => {
+      layout.classList.toggle("sidebar-collapsed", collapsed);
+      localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0");
+      btn.title = collapsed ? "Show sidebar" : "Hide sidebar";
+      btn.innerHTML = collapsed
+        ? '<i class="bi bi-layout-sidebar-reverse"></i>'
+        : '<i class="bi bi-layout-sidebar"></i>';
+    };
+
+    applyState(localStorage.getItem("sidebarCollapsed") === "1");
+
+    btn.addEventListener("click", () => {
+      applyState(!layout.classList.contains("sidebar-collapsed"));
+    });
   },
 
   // ── Import markdown as context ─────────────────────────────────────────────
