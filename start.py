@@ -74,10 +74,8 @@ def ensure_git_updated():
             print(result.stdout.strip())
         if result.stderr.strip():
             print("Git warnings:", result.stderr.strip())
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to pull from git repository: {e}")
-        print(e.stdout)
-        print(e.stderr)
+    except subprocess.CalledProcessError:
+        print("ERROR: Internet is unavailable. Connect to the internet and try again.")
         sys.exit(1)
 
 
@@ -116,9 +114,13 @@ def ensure_dependencies():
         print("WARNING: requirements.txt not found, skipping install.")
         return
     print("Installing dependencies...")
-    subprocess.check_call([
-        venv_python(), "-m", "pip", "install", "-r", req_file, "--quiet", "--upgrade"
-    ])
+    try:
+        subprocess.check_call([
+            venv_python(), "-m", "pip", "install", "-r", req_file, "--quiet", "--upgrade"
+        ])
+    except subprocess.CalledProcessError:
+        print("ERROR: Internet is unavailable. Connect to the internet and try again.")
+        sys.exit(1)
     print("Dependencies up to date.")
 
 
